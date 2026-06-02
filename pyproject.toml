@@ -1,0 +1,142 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "seclab-taskflows-fuzzing"
+dynamic = ["version"]
+description = 'Coverage-guided fuzzing taskflow for the GitHub Security Lab Taskflow Agent (https://github.com/GitHubSecurityLab/seclab-taskflow-agent)'
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+keywords = []
+authors = [
+  { name = "GitHub Security Lab", email = "securitylab@github.com" },
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: Implementation :: CPython",
+  "Programming Language :: Python :: Implementation :: PyPy",
+]
+dependencies = [
+  "seclab-taskflow-agent==0.3.1",
+  "seclab-taskflows @ git+https://github.com/GitHubSecurityLab/seclab-taskflows@main",
+]
+
+[project.urls]
+Source = "https://github.com/GitHubSecurityLab/seclab-taskflows-fuzzing"
+Issues = "https://github.com/GitHubSecurityLab/seclab-taskflows-fuzzing/issues"
+
+[tool.hatch.version]
+path = "src/seclab_taskflows_fuzzing/__about__.py"
+
+[tool.hatch.metadata]
+# Required so the `seclab-taskflows @ git+https://...` direct reference is
+# accepted in `project.dependencies`.
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/seclab_taskflows_fuzzing"]
+
+[tool.hatch.envs.hatch-test]
+extra-dependencies = [
+  "pytest-asyncio==1.3.0",
+]
+
+[tool.hatch.envs.types]
+extra-dependencies = [
+  "mypy>=1.0.0",
+]
+[tool.hatch.envs.types.scripts]
+check = "mypy --install-types --non-interactive {args:src/seclab_taskflows_fuzzing tests}"
+
+[tool.coverage.run]
+source_pkgs = ["seclab_taskflows_fuzzing", "tests"]
+branch = true
+parallel = true
+omit = [
+  "src/seclab_taskflows_fuzzing/__about__.py",
+]
+
+[tool.coverage.paths]
+seclab_taskflows_fuzzing = [
+  "src/seclab_taskflows_fuzzing",
+  "*/seclab-taskflows-fuzzing/src/seclab_taskflows_fuzzing",
+]
+tests = ["tests", "*/seclab-taskflows-fuzzing/tests"]
+
+[tool.coverage.report]
+exclude_lines = [
+  "no cov",
+  "if __name__ == .__main__.:",
+  "if TYPE_CHECKING:",
+]
+
+[tool.ruff.lint]
+ignore = [
+  "A001",
+  "A002",
+  "ARG001",
+  "B007",
+  "B008",
+  "BLE001",
+  "C403",
+  "C405",
+  "E713",
+  "EM102",
+  "F401",
+  "F541",
+  "F841",
+  "FA100",
+  "FA102",
+  "FBT001",
+  "FBT002",
+  "G004",
+  "I001",
+  "INP001",
+  "LOG015",
+  "N802",
+  "PERF102",
+  "PERF401",
+  "PIE810",
+  "PLC0206",
+  "PLR1730",
+  "PLR2004",
+  "PLW0602",
+  "PLW0603",
+  "PLW1508",
+  "PLW1510",
+  "RET504",
+  "RET505",
+  "RUF003",
+  "RUF013",
+  "RUF015",
+  "S607",
+  "SIM101",
+  "SIM114",
+  "SIM117",
+  "SIM118",
+  "SIM300",
+  "T201",
+  "TID252",
+  "TRY003",
+  "TRY300",
+  "UP032",
+  "W291",
+  "W293",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = [
+  "S101",
+  "SLF001",
+]
+
+[tool.pytest.ini_options]
+markers = [
+  "xdist_group: Group tests to run on the same xdist worker",
+]
