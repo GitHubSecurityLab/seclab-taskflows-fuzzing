@@ -1,8 +1,17 @@
-# Fuzzing Taskflow — Complete Reference
+# Seclab Taskflows Fuzzing
 
-> An LLM-driven, OSS-Fuzz-style fuzzing pipeline for native C/C++ projects.
-> AFL++ for execution, clang+lcov for coverage, an LLM agent for
-> harness writing, coverage-feedback decisions, triage, and reporting.
+An LLM-driven, OSS-Fuzz-style fuzzing pipeline for native C/C++ projects.
+AFL++ for execution, clang+lcov for coverage, an LLM agent for
+harness writing, coverage-feedback decisions, triage, and reporting.
+
+- Fully autonomous: give it a GitHub repo and it handles everything from target identification to vulnerability reports.
+- OSS-Fuzz-style techniques: per-format mutators/dictionaries, structure-aware token splicing, coverage-driven harness improvements.
+- Produces machine-readable crash reports with exploitability verdicts and suggested patches.
+- Live HTML dashboard for real-time campaign monitoring.
+- Written in Python (taskflows/toolboxes/configs) with C harness generation for AFL++.
+- Status: **Active development**.
+
+## Background
 
 This repository contains the **fuzzing taskflow** for the
 [GitHub Security Lab Taskflow Agent](https://github.com/GitHubSecurityLab/seclab-taskflow-agent).
@@ -13,15 +22,16 @@ companion repository for a few shared building blocks
 toolboxes, and the default `model_config`) — those are installed
 automatically as a Python dependency.
 
-If you want a 10-line quickstart, jump to
-[Quick start](#quick-start). If you want to know what knob to turn, jump to
-[Tunable knobs](#tunable-knobs-environment-variables). If you want to add
-a new feature, read [Architecture](#architecture) and
-[Adding a new stage](#extending-the-pipeline) end-to-end.
+Contributions are welcome! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
----
+## Requirements
 
-## Installation
+- Python 3.11+
+- A Linux environment (or Codespace) with access to `apt`
+- AFL++, clang, lcov, ctags, cscope, graphviz (auto-installed by the pipeline if missing)
+- Git and GitHub CLI (`gh`)
+
+### Installation
 
 ```bash
 pip install git+https://github.com/GitHubSecurityLab/seclab-taskflows-fuzzing
@@ -710,3 +720,21 @@ lives, and what tests guard it.
   Several of this taskflow's features (per-format mutators, dedup-by-stack,
   call-graph + untouched API report, multi-candidate harnesses) are
   inspired by them.
+
+---
+
+## License
+
+This project is licensed under the terms of the MIT open source license. Please refer to the [LICENSE](./LICENSE.txt) file for the full terms.
+
+## Maintainers
+
+See [CODEOWNERS](./CODEOWNERS) or reach out to the GitHub Security Lab team.
+
+## Support
+
+See [SUPPORT.md](./SUPPORT.md) for details on how to get help with this project.
+
+## Acknowledgement
+
+This project builds on top of [AFL++](https://github.com/AFLplusplus/AFLplusplus), [OSS-Fuzz](https://github.com/google/oss-fuzz), and [Fuzz-Introspector](https://github.com/ossf/fuzz-introspector) concepts and techniques.
