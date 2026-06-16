@@ -1,2 +1,2 @@
-# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-FileCopyrightText: GitHub and others
 # SPDX-License-Identifier: MIT

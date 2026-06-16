@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-FileCopyrightText: GitHub and others
 # SPDX-License-Identifier: MIT
 
 """Live HTML dashboard for the fuzzing taskflow.

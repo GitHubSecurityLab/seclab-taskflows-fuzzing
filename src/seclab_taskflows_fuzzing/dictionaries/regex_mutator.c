@@ -1,4 +1,4 @@
-/* SPDX-FileCopyrightText: GitHub, Inc.
+/* SPDX-FileCopyrightText: GitHub and others
  * SPDX-License-Identifier: MIT
  *
  * Structure-aware libFuzzer/AFL++ custom mutator for regex pattern inputs.

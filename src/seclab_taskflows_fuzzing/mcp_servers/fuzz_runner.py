@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-FileCopyrightText: GitHub and others
 # SPDX-License-Identifier: MIT
 
 """FastMCP server: narrow execution tools for the fuzzing taskflow.

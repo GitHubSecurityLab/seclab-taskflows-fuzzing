@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-FileCopyrightText: GitHub and others
 # SPDX-License-Identifier: MIT
 #
 # run_fuzzing.sh — autonomous fuzzing taskflow driver.

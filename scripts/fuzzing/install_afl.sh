@@ -1,5 +1,5 @@
 #!/bin/bash
-# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-FileCopyrightText: GitHub and others
 # SPDX-License-Identifier: MIT
 #
 # install_afl.sh — install AFL++ (latest release tag) and llvm/lcov tooling

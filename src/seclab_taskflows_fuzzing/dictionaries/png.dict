@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-FileCopyrightText: GitHub and others
 # SPDX-License-Identifier: MIT
 #
 # AFL/libFuzzer dictionary for PNG decoders. Magic bytes + chunk types +

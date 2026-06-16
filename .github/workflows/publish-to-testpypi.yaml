@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: GitHub and others
+# SPDX-License-Identifier: MIT
+
 name: Publish Pre-Release to TestPyPI
 
 on: workflow_dispatch

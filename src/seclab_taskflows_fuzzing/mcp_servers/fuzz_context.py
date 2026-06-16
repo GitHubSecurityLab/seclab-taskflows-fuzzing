@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: GitHub, Inc.
+# SPDX-FileCopyrightText: GitHub and others
 # SPDX-License-Identifier: MIT
 
 """FastMCP server: persistent state for the fuzzing taskflow + LCOV parser.

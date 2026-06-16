@@ -1,4 +1,7 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: GitHub and others
+# SPDX-License-Identifier: MIT
+
 set -e
 
 # Create .env file if it doesn't exist
