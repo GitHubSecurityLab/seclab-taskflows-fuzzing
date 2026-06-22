@@ -27,3 +27,7 @@ htmlcov/
 # Project-local
 fuzz_*.log
 /tmp/
+
+# Secrets and local drafts (never commit)
+.env
+blog_post.md
