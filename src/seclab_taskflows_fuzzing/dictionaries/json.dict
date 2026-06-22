@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: GitHub and others
+# SPDX-FileCopyrightText: GitHub, Inc.
 # SPDX-License-Identifier: MIT
 #
 # AFL/libFuzzer dictionary for JSON. Tokens that are easy for the mutator

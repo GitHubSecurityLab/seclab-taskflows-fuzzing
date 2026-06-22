@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: GitHub and others
+# SPDX-FileCopyrightText: GitHub, Inc.
 # SPDX-License-Identifier: MIT
 
 """SQLAlchemy models for the fuzzing taskflow's persistent state."""

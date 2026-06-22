@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: GitHub and others
+# SPDX-FileCopyrightText: GitHub, Inc.
 # SPDX-License-Identifier: MIT
 
 """FastMCP server: guarded freeform host shell.
