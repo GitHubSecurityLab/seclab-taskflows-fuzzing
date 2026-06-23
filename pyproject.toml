@@ -24,7 +24,7 @@ classifiers = [
 ]
 dependencies = [
   "seclab-taskflow-agent==0.3.1",
-  "seclab-taskflows @ git+https://github.com/GitHubSecurityLab/seclab-taskflows@main",
+  "seclab-taskflows==0.1.0",
 ]
 
 [project.urls]
