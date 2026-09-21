@@ -1174,7 +1174,7 @@ def fold_queue_into_persistent_corpus(
     if tmp.exists():
         shutil.rmtree(tmp, ignore_errors=True)
     tmp.mkdir(parents=True, exist_ok=True)
-    cmin_result = cmin.fn(
+    cmin_result = cmin(
         afl_binary_path=afl_binary_path,
         input_dir=str(cd),
         output_dir=str(tmp),
@@ -1217,7 +1217,7 @@ def reproduce_crash(
         return {"ok": False, "error": f"binary not found: {afl_binary_path}"}
     if not Path(input_path).is_file():
         return {"ok": False, "error": f"input not found: {input_path}"}
-    return replay_under_asan.fn(
+    return replay_under_asan(
         afl_binary_path=afl_binary_path, input_path=input_path,
         stdin_input=False, timeout_seconds=timeout_seconds,
     )
