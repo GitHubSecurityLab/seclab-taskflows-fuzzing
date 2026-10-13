@@ -74,8 +74,9 @@ install_afl() {
   git clone --depth 1 --branch "$tag" "$AFL_REPO" "$src"
   (
     cd "$src"
-    # source build covers afl-clang-lto, afl-clang-fast, afl-fuzz, afl-cov tooling, etc.
-    make distrib PREFIX="$AFL_PREFIX" -j"$(nproc)"
+    # `all` builds afl-fuzz/-tmin/-cmin/-showmap, LLVM mode (afl-clang-lto,
+    # afl-clang-fast) and libAFLDriver.a; skips unused frida/qemu/unicorn/nyx modes.
+    make all PREFIX="$AFL_PREFIX" -j"$(nproc)"
     make install PREFIX="$AFL_PREFIX"
   )
   rm -rf "$src"
