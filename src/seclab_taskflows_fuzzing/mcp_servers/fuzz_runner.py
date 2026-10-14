@@ -210,8 +210,19 @@ def check_tooling() -> dict:
 # Building harnesses
 # ---------------------------------------------------------------------------
 
-def _afl_compiler() -> str:
-    return _which("afl-clang-lto") or _which("afl-clang-fast") or "afl-clang-lto"
+def _afl_compiler() -> tuple[str | None, str]:
+    """Return ``(compiler path, warning)`` for the AFL++ builds.
+
+    Prefers afl-clang-lto; falls back to afl-clang-fast with a warning.
+    The path is None when neither is on PATH.
+    """
+    lto, fast = "afl-clang-lto", "afl-clang-fast"
+    if path := _which(lto):
+        return path, ""
+    if path := _which(fast):
+        return path, (f"{lto} not found, using {fast}: no collision-free edge IDs or "
+                      "LTO autodictionary (install lld and re-run install_afl.sh)")
+    return None, ""
 
 
 # Library paths recorded by analyze_build_system may contain this placeholder;
@@ -247,7 +258,8 @@ def compile_harness(
 ) -> dict:
     """Build the three fuzzing binaries for one harness:
 
-    - ``<basename>.afl`` — instrumented with afl-clang-lto (or afl-clang-fast).
+    - ``<basename>.afl`` — instrumented with afl-clang-lto. If it isn't on
+      PATH, afl-clang-fast is used and the result carries a ``warning``.
     - ``<basename>.cov`` — instrumented with clang ``-fprofile-instr-generate -fcoverage-mapping``.
       Its standalone ``main()`` driver is compiled separately with plain
       ``clang`` (C, no coverage flags) so it doesn't appear in coverage reports.
@@ -284,11 +296,16 @@ def compile_harness(
     cov_bin = out_dir / f"{output_basename}.cov"
     cmplog_bin = out_dir / f"{output_basename}.cmplog"
 
-    afl_compiler = _afl_compiler()
+    afl_compiler, afl_warning = _afl_compiler()
     c_compiler = _which("clang")
     cov_compiler = _which("clang++") if language == "c++" else c_compiler
     if not c_compiler or not cov_compiler:
         return {"ok": False, "error": f"{'clang' if not c_compiler else 'clang++'} not found on PATH"}
+    if not afl_compiler:
+        return {"ok": False, "error": "neither afl-clang-lto nor afl-clang-fast "
+                                      "found on PATH (re-run install_afl.sh)"}
+    if afl_warning:
+        logging.warning("compile_harness: %s", afl_warning)
 
     afl_driver = _afl_driver_archive()
     if not afl_driver:
@@ -371,6 +388,7 @@ def compile_harness(
         "cov_build_log": (cov_result["stdout"] + cov_result["stderr"])[-3000:],
         "cmplog_build_log": (cmplog_result["stdout"] + cmplog_result["stderr"])[-3000:],
         "custom_mutator": custom_mutator_source or "",
+        "warning": afl_warning,
     }
 
 

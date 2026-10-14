@@ -239,7 +239,7 @@ class TestCmplogBuild:
 
 
 class TestLtoAndVariants:
-    def _compile(self, tmp_path, **kwargs):
+    def _compile(self, tmp_path, which=None, **kwargs):
         src = tmp_path / "h.c"
         src.write_text("int LLVMFuzzerTestOneInput(const unsigned char* d, unsigned long n){(void)d;(void)n;return 0;}")
         fake_driver = tmp_path / "libAFLDriver.a"
@@ -250,13 +250,33 @@ class TestLtoAndVariants:
             calls.append(cmd)
             return {"exit_code": 0, "timed_out": False, "stdout": "", "stderr": "", "cmd": " ".join(cmd)}
 
-        with patch.object(fr.shutil, "which", side_effect=lambda n: f"/usr/bin/{n}"), \
+        with patch.object(fr.shutil, "which", side_effect=which or (lambda n: f"/usr/bin/{n}")), \
              patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
              patch.object(fr, "_build_standalone_driver", return_value=_DRIVER_OK), \
              patch.object(fr, "_run", side_effect=run_mock), \
              patch.object(fr, "FUZZ_BUILDS", tmp_path / "builds"):
             out = fr.compile_harness.fn(harness_source=str(src), output_basename="h", **kwargs)
         return out, calls
+
+    def test_falls_back_to_afl_clang_fast_with_warning(self, tmp_path):
+        out, calls = self._compile(
+            tmp_path,
+            which=lambda n: None if n.startswith("afl-clang-lto") else f"/usr/bin/{n}",
+        )
+        assert out["ok"] is True
+        afl_cmd, _cov_cmd, cmplog_cmd = calls
+        assert afl_cmd[0] == "/usr/bin/afl-clang-fast"
+        assert cmplog_cmd[0] == "/usr/bin/afl-clang-fast"
+        assert "afl-clang-lto not found, using afl-clang-fast" in out["warning"]
+
+    def test_no_afl_compiler_fails(self, tmp_path):
+        out, calls = self._compile(
+            tmp_path,
+            which=lambda n: None if n.startswith("afl-clang-") else f"/usr/bin/{n}",
+        )
+        assert out["ok"] is False
+        assert "neither afl-clang-lto nor afl-clang-fast" in out["error"]
+        assert calls == []
 
     def test_variant_placeholder_resolved_per_build(self, tmp_path):
         out, calls = self._compile(

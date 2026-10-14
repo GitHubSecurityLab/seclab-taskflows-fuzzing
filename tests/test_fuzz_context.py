@@ -133,6 +133,18 @@ class TestHarnessCrud:
         assert h2["afl_binary_path"] == str(tmp_path / "h.afl")
         assert h2["cmplog_binary_path"] == str(tmp_path / "h.cmplog")
 
+    def test_update_build_appends_notes(self, isolated_fc, tmp_path):
+        fc = isolated_fc
+        fc.store_fuzz_target.fn(repo="example/bar", file="x.c", function="g")
+        target_id = fc.get_fuzz_targets.fn(repo="example/bar")[0]["id"]
+        fc.store_harness.fn(target_id=target_id, repo="example/bar",
+                            harness_path=str(tmp_path / "h.c"), notes="initial")
+        h_id = fc.get_harnesses.fn(repo="example/bar")[0]["id"]
+        fc.update_harness_build.fn(harness_id=h_id, notes="afl-clang-lto++ not found")
+        fc.update_harness_build.fn(harness_id=h_id)
+        notes = fc.get_harnesses.fn(repo="example/bar")[0]["notes"]
+        assert notes == "initial\nafl-clang-lto++ not found"
+
 
 # ---------------------------------------------------------------------------
 # Coverage persistence + plateau detection

@@ -170,7 +170,9 @@ Key design rules:
   `AFL_LLVM_CMPLOG=1`) is passed to `afl-fuzz -c` so AFL++'s CMPLOG/RedQueen
   stage can solve magic values and checksums. All three builds are
   mandatory: a failed CMPLOG build fails the harness build, and
-  `run_afl_for` refuses to run without a `.cmplog` binary.
+  `run_afl_for` refuses to run without a `.cmplog` binary. If
+  `afl-clang-lto` isn't installed, the AFL++ builds use `afl-clang-fast`
+  instead and `compile_harness` returns a warning.
 
 ---
 

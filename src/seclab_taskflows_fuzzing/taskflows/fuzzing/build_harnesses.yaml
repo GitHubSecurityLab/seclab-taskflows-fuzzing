@@ -10,8 +10,9 @@ globals:
   repo:
 
 # Compile every harness three times: with AFL++ edge instrumentation
-# (afl-clang-lto), with AFL++ CMPLOG instrumentation (same compiler) and
-# with clang coverage instrumentation.
+# (afl-clang-lto, or afl-clang-fast if LTO isn't installed), with AFL++
+# CMPLOG instrumentation (same compiler) and with clang coverage
+# instrumentation.
 # All three must succeed. Records build_status on each harness row.
 taskflow:
   - task:
@@ -99,7 +100,8 @@ taskflow:
              `ok` (when the returned `ok` is true, i.e. the AFL, CMPLOG and
              coverage builds all succeeded) or a short error message
              extracted from `afl_build_log` / `cmplog_build_log` /
-             `cov_build_log`, whichever failed.
+             `cov_build_log`, whichever failed. If the returned `warning` is
+             non-empty, also pass it as `notes`.
 
           4. If the build failed because of a missing header or a compile error
              in the harness itself, edit the harness source file to fix it,

@@ -181,6 +181,7 @@ def update_harness_build(
     build_cmd_cov: Annotated[str, Field(description="Command used for coverage build")] = "",
     build_status: Annotated[str, Field(description="'ok' or short error explanation")] = "ok",
     cmplog_binary_path: Annotated[str, Field(description="Path to the CMPLOG binary from compile_harness, '' if not built")] = "",
+    notes: Annotated[str, Field(description="Appended to the harness notes, e.g. the warning returned by compile_harness")] = "",
 ) -> str:
     """Persist build artefacts/status for a harness."""
     with Session(_ENGINE) as session:
@@ -193,6 +194,8 @@ def update_harness_build(
         h.build_cmd_afl = build_cmd_afl or h.build_cmd_afl
         h.build_cmd_cov = build_cmd_cov or h.build_cmd_cov
         h.build_status = build_status
+        if notes:
+            h.notes = f"{h.notes}\n{notes}" if h.notes else notes
         session.commit()
         return f"updated harness {harness_id} build_status={build_status}"
 
