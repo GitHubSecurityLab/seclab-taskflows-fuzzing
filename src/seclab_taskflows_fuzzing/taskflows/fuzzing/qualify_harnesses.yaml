@@ -61,6 +61,7 @@ taskflow:
              starts from iteration 1.
 
           2. `run_afl_for(afl_binary_path={{ result.afl_binary_path }},
+                           cmplog_binary_path="{{ result.cmplog_binary_path | default('', true) }}",
                            seed_dir=<seeds dir for this target>,
                            output_dir=<run output dir>,
                            seconds={{ globals.qualifier_seconds|default(60) }},

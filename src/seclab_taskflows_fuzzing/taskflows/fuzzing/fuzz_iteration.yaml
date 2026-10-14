@@ -52,6 +52,7 @@ taskflow:
              → returns a `run_id`.
 
           2. `run_afl_for(afl_binary_path={{ result.afl_binary_path }},
+                           cmplog_binary_path="{{ result.cmplog_binary_path | default('', true) }}",
                            seed_dir=get_persistent_corpus_dir(harness_id={{ result.id }})['corpus_dir'],
                            output_dir=<run output dir>,
                            seconds={{ globals.time_budget_seconds }},
@@ -63,7 +64,11 @@ taskflow:
              Using the persistent corpus dir (rather than the original seeds
              dir) means yesterday's queue carries over to today's run. The
              dictionary path is also persistent — you do NOT need to
-             regenerate it every iteration.
+             regenerate it every iteration. `cmplog_binary_path` is required:
+             it enables AFL++ CMPLOG (input-to-state solving of magic values
+             and checksums), and `run_afl_for` fails if the binary is missing
+             (rebuild the harness). `run_afl_for` handles worker placement
+             itself.
 
              You may set `parallel_workers=2` (or up to `nproc - 1`) when the
              host has spare cores AND the target is single-threaded. For
