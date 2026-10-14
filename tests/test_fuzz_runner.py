@@ -141,6 +141,37 @@ class TestCompileHarness:
         assert "-lpthread" in afl_cmd
         assert "-I/include" in afl_cmd
 
+    @pytest.mark.parametrize(("sanitizers", "expected"), [
+        ("address,undefined", {"AFL_USE_ASAN", "AFL_USE_UBSAN"}),
+        ("undefined", {"AFL_USE_UBSAN"}),
+        ("", set()),
+    ])
+    def test_sets_afl_use_only_for_requested_sanitizers(self, tmp_path, sanitizers, expected):
+        # afl-cc enables a sanitizer if its AFL_USE_* variable exists at all.
+        src = tmp_path / "h.c"
+        src.write_text("int LLVMFuzzerTestOneInput(const unsigned char* d, unsigned long n){return 0;}")
+        fake_driver = tmp_path / "libAFLDriver.a"
+        fake_driver.write_bytes(b"")
+
+        def which_mock(name):
+            return f"/usr/bin/{name}" if name.startswith(("afl-", "clang")) else None
+
+        calls = []
+        def run_mock(cmd, env=None, **kwargs):
+            calls.append({"cmd": cmd, "env": env or {}})
+            return {"exit_code": 0, "timed_out": False, "stdout": "", "stderr": "",
+                    "cmd": " ".join(cmd)}
+
+        with patch.object(fr.shutil, "which", side_effect=which_mock), \
+             patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_run", side_effect=run_mock):
+            fr.compile_harness.fn(harness_source=str(src), output_basename="h",
+                                  sanitizers=sanitizers)
+
+        afl_env = next(c["env"] for c in calls if c["cmd"][-1].endswith(".afl"))
+        assert {k for k in afl_env if k.startswith("AFL_USE_")} == expected
+        assert all(afl_env[k] == "1" for k in expected)
+
 
 # ---------------------------------------------------------------------------
 # run_afl_for: error paths only (real AFL runs are out of scope)

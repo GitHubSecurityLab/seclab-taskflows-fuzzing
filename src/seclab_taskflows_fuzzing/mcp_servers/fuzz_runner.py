@@ -277,8 +277,12 @@ def compile_harness(
     ]
 
     afl_env = AFL_ENV_DEFAULTS.copy()
-    afl_env["AFL_USE_ASAN"] = "1" if "address" in sanitizers else "0"
-    afl_env["AFL_USE_UBSAN"] = "1" if "undefined" in sanitizers else "0"
+    # afl-cc enables a sanitizer when its AFL_USE_* variable exists at all,
+    # even as "0", so only set the requested ones.
+    if "address" in sanitizers:
+        afl_env["AFL_USE_ASAN"] = "1"
+    if "undefined" in sanitizers:
+        afl_env["AFL_USE_UBSAN"] = "1"
 
     afl_result = _run(afl_cmd, env=afl_env)
     cov_result = _run(cov_cmd)
