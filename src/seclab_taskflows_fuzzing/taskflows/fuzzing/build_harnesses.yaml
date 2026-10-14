@@ -10,9 +10,9 @@ globals:
   repo:
 
 # Compile every harness three times: with AFL++ edge instrumentation
-# (afl-clang-lto, or afl-clang-fast if LTO isn't installed), with AFL++
-# CMPLOG instrumentation (same compiler) and with clang coverage
-# instrumentation.
+# (afl-clang-lto++, or afl-clang-fast++ if LTO isn't installed), with AFL++
+# CMPLOG instrumentation (same compiler) and with clang++ coverage
+# instrumentation; .c sources are compiled as C via -x c.
 # All three must succeed. Records build_status on each harness row.
 taskflow:
   - task:

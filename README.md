@@ -162,17 +162,19 @@ Key design rules:
   what makes the persistent corpus and the cross-campaign carryover work.
 - **Three binaries per harness.** AFL's edge instrumentation is unsuitable for
   human-readable coverage reports, so each harness is built with
-  `afl-clang-lto -fsanitize=address,undefined` (the `.afl` binary) and
-  with `clang -fprofile-instr-generate -fcoverage-mapping` (the `.cov`
+  `afl-clang-lto++ -fsanitize=address,undefined` (the `.afl` binary) and
+  with `clang++ -fprofile-instr-generate -fcoverage-mapping` (the `.cov`
   binary). The `.afl` binary fuzzes; the `.cov` binary replays the AFL
   queue to produce real source-line/function/branch coverage. A third,
-  sanitizer-free `.cmplog` binary (`afl-clang-lto` with
+  sanitizer-free `.cmplog` binary (`afl-clang-lto++` with
   `AFL_LLVM_CMPLOG=1`) is passed to `afl-fuzz -c` so AFL++'s CMPLOG/RedQueen
   stage can solve magic values and checksums. All three builds are
   mandatory: a failed CMPLOG build fails the harness build, and
   `run_afl_for` refuses to run without a `.cmplog` binary. If
-  `afl-clang-lto` isn't installed, the AFL++ builds use `afl-clang-fast`
-  instead and `compile_harness` returns a warning.
+  `afl-clang-lto++` isn't installed, the AFL++ builds use
+  `afl-clang-fast++` instead and `compile_harness` returns a warning. The
+  C++ drivers link the C++ standard library, so C and C++ harnesses and
+  libraries both work; `.c` files are still compiled as C (`-x c`).
 
 ---
 

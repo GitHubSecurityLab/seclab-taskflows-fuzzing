@@ -149,8 +149,8 @@ def _build_standalone_driver(clang: str, obj: Path) -> dict:
     """Compile the standalone driver to ``obj`` with plain C ``clang``.
 
     No coverage flags, so the driver stays out of coverage reports. Compiled
-    as C (even when the ``.cov`` binary is linked with clang++) so it
-    references the unmangled ``LLVMFuzzerTestOneInput``.
+    as C (the ``.cov`` binary is linked with clang++) so it references the
+    unmangled ``extern "C"`` ``LLVMFuzzerTestOneInput``.
     """
     return _run([clang, "-g", "-O1", "-c", str(_materialise_standalone_driver()), "-o", str(obj)])
 
@@ -213,16 +213,29 @@ def check_tooling() -> dict:
 def _afl_compiler() -> tuple[str | None, str]:
     """Return ``(compiler path, warning)`` for the AFL++ builds.
 
-    Prefers afl-clang-lto; falls back to afl-clang-fast with a warning.
+    Prefers afl-clang-lto++; falls back to afl-clang-fast++ with a warning.
     The path is None when neither is on PATH.
     """
-    lto, fast = "afl-clang-lto", "afl-clang-fast"
+    lto, fast = "afl-clang-lto++", "afl-clang-fast++"
     if path := _which(lto):
         return path, ""
     if path := _which(fast):
         return path, (f"{lto} not found, using {fast}: no collision-free edge IDs or "
                       "LTO autodictionary (install lld and re-run install_afl.sh)")
     return None, ""
+
+
+def _source_args(paths: list[str]) -> list[str]:
+    """Inputs for a C++ compiler driver, with ``.c`` files compiled as C.
+
+    clang++ would compile ``.c`` files as C++ (rejecting valid C and mangling
+    ``LLVMFuzzerTestOneInput``), so each is wrapped in ``-x c … -x none``.
+    Other inputs keep clang's extension-based detection.
+    """
+    args: list[str] = []
+    for p in paths:
+        args += ["-x", "c", p, "-x", "none"] if p.endswith(".c") else [p]
+    return args
 
 
 # Library paths recorded by analyze_build_system may contain this placeholder;
@@ -253,19 +266,22 @@ def compile_harness(
     extra_ldflags: Annotated[list[str] | None, Field(description="Additional LDFLAGS (e.g. -L paths). '{variant}' is replaced per build")] = None,
     extra_libs: Annotated[list[str] | None, Field(description="Additional libraries to link, without leading -l (e.g. ['z', 'pthread'])")] = None,
     sanitizers: Annotated[str, Field(description="Comma-separated list, e.g. 'address,undefined'. Must match the afl library variant from analyze_build_system, which uses 'address,undefined'")] = "address,undefined",
-    language: Annotated[str, Field(description="'c' or 'c++'")] = "c",
     custom_mutator_source: Annotated[str, Field(description="Optional path to a .c file implementing LLVMFuzzerCustomMutator. Linked into the AFL build only (not the coverage build, which doesn't fuzz). Use write_format_mutator() to generate one for a known format.")] = "",
 ) -> dict:
     """Build the three fuzzing binaries for one harness:
 
-    - ``<basename>.afl`` — instrumented with afl-clang-lto. If it isn't on
-      PATH, afl-clang-fast is used and the result carries a ``warning``.
-    - ``<basename>.cov`` — instrumented with clang ``-fprofile-instr-generate -fcoverage-mapping``.
+    - ``<basename>.afl`` — instrumented with afl-clang-lto++. If it isn't on
+      PATH, afl-clang-fast++ is used and the result carries a ``warning``.
+    - ``<basename>.cov`` — instrumented with clang++ ``-fprofile-instr-generate -fcoverage-mapping``.
       Its standalone ``main()`` driver is compiled separately with plain
       ``clang`` (C, no coverage flags) so it doesn't appear in coverage reports.
     - ``<basename>.cmplog`` — same AFL++ compiler with ``AFL_LLVM_CMPLOG=1`` and
       no sanitizers; passed to ``run_afl_for`` as ``cmplog_binary_path`` so
       afl-fuzz can solve magic bytes / checksums.
+
+    All three are built with the C++ compiler drivers so C++ harnesses and
+    C++ target libraries link (C++ standard library and sanitizer C++
+    runtimes). ``.c`` sources are still compiled as C via ``-x c``.
 
     The agent later runs ``.afl`` for fuzzing and ``.cov`` for coverage replay.
 
@@ -298,11 +314,11 @@ def compile_harness(
 
     afl_compiler, afl_warning = _afl_compiler()
     c_compiler = _which("clang")
-    cov_compiler = _which("clang++") if language == "c++" else c_compiler
+    cov_compiler = _which("clang++")
     if not c_compiler or not cov_compiler:
         return {"ok": False, "error": f"{'clang' if not c_compiler else 'clang++'} not found on PATH"}
     if not afl_compiler:
-        return {"ok": False, "error": "neither afl-clang-lto nor afl-clang-fast "
+        return {"ok": False, "error": "neither afl-clang-lto++ nor afl-clang-fast++ "
                                       "found on PATH (re-run install_afl.sh)"}
     if afl_warning:
         logging.warning("compile_harness: %s", afl_warning)
@@ -338,8 +354,8 @@ def compile_harness(
 
     sources, cflags, ldflags = _inputs("afl")
     afl_cmd = [
-        afl_compiler, "-g", "-O1", *(["-x", "c++"] if language == "c++" else []),
-        *sources, *afl_extra_sources, *cflags, san_flag if san_flag else "",
+        afl_compiler, "-g", "-O1",
+        *_source_args([*sources, *afl_extra_sources]), *cflags, san_flag if san_flag else "",
         *ldflags, str(afl_driver), *libs, "-o", str(afl_bin),
     ]
     afl_cmd = [c for c in afl_cmd if c]
@@ -347,7 +363,7 @@ def compile_harness(
     sources, cflags, ldflags = _inputs("cov")
     cov_cmd = [
         cov_compiler, "-g", "-O1", "-fprofile-instr-generate", "-fcoverage-mapping",
-        *sources, str(driver_obj), *cflags,
+        *_source_args(sources), str(driver_obj), *cflags,
         *ldflags, *libs, "-o", str(cov_bin),
     ]
 
@@ -369,8 +385,8 @@ def compile_harness(
     if afl_result["exit_code"] == 0:
         sources, cflags, ldflags = _inputs("cmplog")
         cmplog_cmd = [
-            afl_compiler, "-g", "-O1", *(["-x", "c++"] if language == "c++" else []),
-            *sources, *cflags, *ldflags, str(afl_driver), *libs,
+            afl_compiler, "-g", "-O1",
+            *_source_args(sources), *cflags, *ldflags, str(afl_driver), *libs,
             "-o", str(cmplog_bin),
         ]
         cmplog_env = {**AFL_ENV_DEFAULTS, "AFL_LLVM_CMPLOG": "1"}

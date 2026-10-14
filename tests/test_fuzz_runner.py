@@ -99,10 +99,18 @@ class TestCompileHarness:
     def test_missing_clang_short_circuits(self, tmp_path):
         src = tmp_path / "h.c"
         src.write_text("int main(){return 0;}")
-        with patch.object(fr.shutil, "which", side_effect=lambda n: "/usr/bin/afl-clang-lto" if n.startswith("afl-") else None):
+        with patch.object(fr.shutil, "which", side_effect=lambda n: "/usr/bin/afl-clang-lto++" if n.startswith("afl-") else None):
             out = fr.compile_harness.fn(harness_source=str(src), output_basename="x")
         assert out["ok"] is False
         assert "clang not found" in out["error"]
+
+    def test_missing_clangxx_short_circuits(self, tmp_path):
+        src = tmp_path / "h.c"
+        src.write_text("int main(){return 0;}")
+        with patch.object(fr.shutil, "which", side_effect=lambda n: None if n == "clang++" else f"/usr/bin/{n}"):
+            out = fr.compile_harness.fn(harness_source=str(src), output_basename="x")
+        assert out["ok"] is False
+        assert "clang++ not found" in out["error"]
 
     def test_invokes_both_compilers(self, tmp_path):
         src = tmp_path / "h.c"
@@ -112,10 +120,10 @@ class TestCompileHarness:
         fake_driver.write_bytes(b"")
 
         def which_mock(name):
-            if name in ("afl-clang-lto", "afl-clang-fast"):
-                return "/usr/bin/afl-clang-lto"
+            if name in ("afl-clang-lto++", "afl-clang-fast++"):
+                return "/usr/bin/afl-clang-lto++"
             if name in ("clang", "clang++"):
-                return "/usr/bin/clang"
+                return f"/usr/bin/{name}"
             return None
 
         calls = []
@@ -136,10 +144,10 @@ class TestCompileHarness:
         assert out["ok"] is True
         assert len(calls) == 3
         afl_cmd, cov_cmd, _cmplog_cmd = calls
-        assert "/usr/bin/afl-clang-lto" in afl_cmd
+        assert afl_cmd[0] == "/usr/bin/afl-clang-lto++"
         assert "-fsanitize=address,undefined" in afl_cmd
         assert str(fake_driver) in afl_cmd
-        assert "/usr/bin/clang" in cov_cmd
+        assert cov_cmd[0] == "/usr/bin/clang++"
         assert "-fprofile-instr-generate" in cov_cmd
         assert "-fcoverage-mapping" in cov_cmd
         assert "-lpthread" in afl_cmd
@@ -206,7 +214,7 @@ class TestCmplogBuild:
         assert out["ok"] is True
         assert len(calls) == 3
         cmplog = calls[2]
-        assert cmplog["cmd"][0] == "/usr/bin/afl-clang-lto"
+        assert cmplog["cmd"][0] == "/usr/bin/afl-clang-lto++"
         assert cmplog["cmd"][-1].endswith("h.cmplog")
         assert str(driver) in cmplog["cmd"]
         assert not any(a.startswith("-fsanitize") for a in cmplog["cmd"])
@@ -239,9 +247,9 @@ class TestCmplogBuild:
 
 
 class TestLtoAndVariants:
-    def _compile(self, tmp_path, which=None, **kwargs):
-        src = tmp_path / "h.c"
-        src.write_text("int LLVMFuzzerTestOneInput(const unsigned char* d, unsigned long n){(void)d;(void)n;return 0;}")
+    def _compile(self, tmp_path, which=None, harness="h.cc", **kwargs):
+        src = tmp_path / harness
+        src.write_text("extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*, unsigned long){return 0;}")
         fake_driver = tmp_path / "libAFLDriver.a"
         fake_driver.write_bytes(b"")
         calls = []
@@ -258,6 +266,44 @@ class TestLtoAndVariants:
             out = fr.compile_harness.fn(harness_source=str(src), output_basename="h", **kwargs)
         return out, calls
 
+    @pytest.mark.parametrize("harness", ["h.c", "h.cc"])
+    def test_always_links_with_cxx_drivers(self, tmp_path, harness):
+        out, calls = self._compile(tmp_path, harness=harness)
+        assert out["ok"] is True
+        afl_cmd, cov_cmd, cmplog_cmd = calls
+        assert afl_cmd[0] == "/usr/bin/afl-clang-lto++"
+        assert cmplog_cmd[0] == "/usr/bin/afl-clang-lto++"
+        assert cov_cmd[0] == "/usr/bin/clang++"
+        assert out["warning"] == ""
+
+    def test_c_sources_compiled_as_c(self, tmp_path):
+        mutator = tmp_path / "mut.c"
+        mutator.write_text("/* mutator */")
+        out, calls = self._compile(
+            tmp_path, harness="h.c", custom_mutator_source=str(mutator),
+            extra_sources=["/src/a.c", "/src/b.cc", "/src/build-{variant}/libfoo.a"],
+        )
+        assert out["ok"] is True
+        harness = str(tmp_path / "h.c")
+
+        def wrapped(cmd, path):
+            i = cmd.index(path)
+            return cmd[i - 2:i] == ["-x", "c"] and cmd[i + 1:i + 3] == ["-x", "none"]
+
+        for cmd, variant in zip(calls, ("afl", "cov", "cmplog")):
+            assert wrapped(cmd, harness)
+            assert wrapped(cmd, "/src/a.c")
+            assert cmd[cmd.index("/src/b.cc") - 1] == "none"
+            assert cmd[cmd.index(f"/src/build-{variant}/libfoo.a") - 1] == "/src/b.cc"
+            assert cmd.count("-x") == (6 if variant == "afl" else 4)
+        assert wrapped(calls[0], str(mutator))
+
+    def test_cxx_harness_not_wrapped(self, tmp_path):
+        out, calls = self._compile(tmp_path, harness="h.cc")
+        assert out["ok"] is True
+        for cmd in calls:
+            assert "-x" not in cmd
+
     def test_falls_back_to_afl_clang_fast_with_warning(self, tmp_path):
         out, calls = self._compile(
             tmp_path,
@@ -265,9 +311,9 @@ class TestLtoAndVariants:
         )
         assert out["ok"] is True
         afl_cmd, _cov_cmd, cmplog_cmd = calls
-        assert afl_cmd[0] == "/usr/bin/afl-clang-fast"
-        assert cmplog_cmd[0] == "/usr/bin/afl-clang-fast"
-        assert "afl-clang-lto not found, using afl-clang-fast" in out["warning"]
+        assert afl_cmd[0] == "/usr/bin/afl-clang-fast++"
+        assert cmplog_cmd[0] == "/usr/bin/afl-clang-fast++"
+        assert "afl-clang-lto++ not found, using afl-clang-fast++" in out["warning"]
 
     def test_no_afl_compiler_fails(self, tmp_path):
         out, calls = self._compile(
@@ -275,7 +321,7 @@ class TestLtoAndVariants:
             which=lambda n: None if n.startswith("afl-clang-") else f"/usr/bin/{n}",
         )
         assert out["ok"] is False
-        assert "neither afl-clang-lto nor afl-clang-fast" in out["error"]
+        assert "neither afl-clang-lto++ nor afl-clang-fast++" in out["error"]
         assert calls == []
 
     def test_variant_placeholder_resolved_per_build(self, tmp_path):
@@ -297,9 +343,9 @@ class TestLtoAndVariants:
 
 
 class TestStandaloneDriver:
-    def _compile(self, tmp_path, driver_exit=0, language="c"):
-        src = tmp_path / "h.c"
-        src.write_text("int LLVMFuzzerTestOneInput(const unsigned char* d, unsigned long n){(void)d;(void)n;return 0;}")
+    def _compile(self, tmp_path, driver_exit=0, harness="h.cc"):
+        src = tmp_path / harness
+        src.write_text("extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*, unsigned long){return 0;}")
         fake_driver = tmp_path / "libAFLDriver.a"
         fake_driver.write_bytes(b"")
         calls = []
@@ -315,18 +361,18 @@ class TestStandaloneDriver:
              patch.object(fr, "_run", side_effect=run_mock), \
              patch.object(fr, "WORKSPACE", tmp_path), \
              patch.object(fr, "FUZZ_BUILDS", tmp_path / "builds"):
-            out = fr.compile_harness.fn(harness_source=str(src), output_basename="h", language=language)
+            out = fr.compile_harness.fn(harness_source=str(src), output_basename="h")
         return out, calls
 
-    @pytest.mark.parametrize(("language", "cov_compiler"), [("c", "clang"), ("c++", "clang++")])
-    def test_driver_compiled_as_plain_c_and_linked_as_object(self, tmp_path, language, cov_compiler):
-        out, calls = self._compile(tmp_path, language=language)
+    @pytest.mark.parametrize("harness", ["h.c", "h.cc"])
+    def test_driver_compiled_as_plain_c_and_linked_as_object(self, tmp_path, harness):
+        out, calls = self._compile(tmp_path, harness=harness)
         assert out["ok"] is True
         driver_cmd, _afl_cmd, cov_cmd, _cmplog_cmd = calls
         driver_c = str(tmp_path / "_aflpp_standalone_driver.c")
         driver_o = str(tmp_path / "builds" / "h.driver.o")
         assert driver_cmd == ["/usr/bin/clang", "-g", "-O1", "-c", driver_c, "-o", driver_o]
-        assert cov_cmd[0] == f"/usr/bin/{cov_compiler}"
+        assert cov_cmd[0] == "/usr/bin/clang++"
         assert "-fprofile-instr-generate" in cov_cmd
         assert driver_o in cov_cmd
         assert driver_c not in cov_cmd

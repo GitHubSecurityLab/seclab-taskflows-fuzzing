@@ -64,9 +64,9 @@ succeed:
 
 | Binary | Compiler | Flags | Used for |
 |--------|----------|-------|----------|
-| `<harness>.afl` | `afl-clang-lto` | `-fsanitize=address,undefined` | actual fuzzing campaign |
-| `<harness>.cov` | `clang` | `-fprofile-instr-generate -fcoverage-mapping` | LCOV replay of the AFL queue |
-| `<harness>.cmplog` | `afl-clang-lto` | `AFL_LLVM_CMPLOG=1`, no sanitizers | `afl-fuzz -c` (CMPLOG/RedQueen) to solve magic values and checksums |
+| `<harness>.afl` | `afl-clang-lto++` | `-fsanitize=address,undefined` | actual fuzzing campaign |
+| `<harness>.cov` | `clang++` | `-fprofile-instr-generate -fcoverage-mapping` | LCOV replay of the AFL queue |
+| `<harness>.cmplog` | `afl-clang-lto++` | `AFL_LLVM_CMPLOG=1`, no sanitizers | `afl-fuzz -c` (CMPLOG/RedQueen) to solve magic values and checksums |
 
 This gives you real **source-line / function / branch** coverage, not just
 edge counts. The `.cmplog` binary is mandatory: a failed CMPLOG build fails
@@ -74,9 +74,11 @@ the harness build, and `run_afl_for` refuses to run without it. With
 `parallel_workers >= 2`,
 `run_afl_for` runs CMPLOG on the master and on `secondary_1` (with `-l 2AT`)
 only, in line with AFL++'s multi-core guidance that one or two instances run
-CMPLOG and at least one uses `-l 2AT`. `afl-clang-lto` is preferred; if it
-isn't installed, `afl-clang-fast` is used instead and `compile_harness`
-returns a warning, which `build_harnesses` appends to the harness notes.
+CMPLOG and at least one uses `-l 2AT`. `afl-clang-lto++` is preferred; if it
+isn't installed, `afl-clang-fast++` is used instead and `compile_harness`
+returns a warning, which `build_harnesses` appends to the harness notes. The
+C++ drivers link the C++ standard library, so a C harness can link a C++
+library; `.c` sources are still compiled as C via `-x c`.
 
 ### Library variants and `{variant}`
 
