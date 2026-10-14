@@ -51,14 +51,29 @@ taskflow:
         `<workspace_dir>/repo/<owner>__<repo>/target_{{ result.id }}/` as the
         per-target subdirectory.
 
+        ## Harness language
+
+        Pick the harness file extension (`<ext>` below) from the target's API:
+
+          - `c` when the target can be called from C: a C function declared
+            in a C header, including the `extern "C"` API of a C++ library.
+          - `cc` when calling the target needs C++: classes, namespaces,
+            references, templates, overloads or `std::` types in its
+            signature or headers.
+
+        `compile_harness` compiles `.c` files as C and `.cc` files as C++ and
+        always links the C++ runtime, so either works against a C or C++
+        library.
+
         ## G3: candidate harnesses
 
         The taskflow runs with `harness_candidates = {{ globals.harness_candidates|default(1) }}`.
 
         - If `harness_candidates == 1` (the default): write a single harness
-          named `harness.c` and a single seed corpus.
+          named `harness.<ext>` and a single seed corpus.
         - If `harness_candidates >= 2`: write N **distinct** candidate
-          harnesses, named `harness_v1.c`, `harness_v2.c`, ... `harness_vN.c`.
+          harnesses, named `harness_v1.<ext>`, `harness_v2.<ext>`, ...
+          `harness_vN.<ext>`.
           Each candidate must use a meaningfully different strategy. Suggested
           variants:
 
@@ -92,6 +107,22 @@ taskflow:
         // include the headers identified by analyse build system
         int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             // bound any explosive allocations
+            if (size > 1u << 20) return 0;
+            // call the target function with `data` / `size`
+            return 0;
+        }
+        ```
+
+        A C++ harness must declare the entry point `extern "C"`, or the
+        driver won't find it. Catch exceptions the target documents as its
+        normal error reporting for bad input; an escaping exception aborts
+        and is reported as a crash:
+
+        ```cpp
+        #include <cstdint>
+        #include <cstddef>
+        // include the headers identified by analyse build system
+        extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             if (size > 1u << 20) return 0;
             // call the target function with `data` / `size`
             return 0;

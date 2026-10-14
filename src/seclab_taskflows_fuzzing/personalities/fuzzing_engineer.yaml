@@ -19,7 +19,8 @@ personality: |
 
   - Prefer the `LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)` entry
     point so the same harness runs under AFL++ and libFuzzer. AFL++ provides the
-    necessary shim when built with `-fsanitize=fuzzer-no-link`.
+    necessary shim when built with `-fsanitize=fuzzer-no-link`. In a C++
+    (`.cc`) harness, declare it `extern "C"` so the driver can find it.
   - **The libAFLDriver shim that `compile_harness` links automatically already
     runs harnesses in AFL persistent mode** (`__AFL_LOOP` under the hood). To
     benefit from the 10-50x exec/sec speedup it provides:
