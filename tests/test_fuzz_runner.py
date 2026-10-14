@@ -177,6 +177,44 @@ class TestCompileHarness:
         assert all(afl_env[k] == "1" for k in expected)
 
 
+class TestLtoAndVariants:
+    def _compile(self, tmp_path, **kwargs):
+        src = tmp_path / "h.c"
+        src.write_text("int LLVMFuzzerTestOneInput(const unsigned char* d, unsigned long n){(void)d;(void)n;return 0;}")
+        fake_driver = tmp_path / "libAFLDriver.a"
+        fake_driver.write_bytes(b"")
+        calls = []
+
+        def run_mock(cmd, **kw):
+            calls.append(cmd)
+            return {"exit_code": 0, "timed_out": False, "stdout": "", "stderr": "", "cmd": " ".join(cmd)}
+
+        with patch.object(fr.shutil, "which", side_effect=lambda n: f"/usr/bin/{n}"), \
+             patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_build_standalone_driver", return_value=_DRIVER_OK), \
+             patch.object(fr, "_run", side_effect=run_mock), \
+             patch.object(fr, "FUZZ_BUILDS", tmp_path / "builds"):
+            out = fr.compile_harness.fn(harness_source=str(src), output_basename="h", **kwargs)
+        return out, calls
+
+    def test_variant_placeholder_resolved_per_build(self, tmp_path):
+        out, calls = self._compile(
+            tmp_path,
+            extra_sources=["/src/build-{variant}/libfoo.a"],
+            extra_cflags=["-I/src/include", "-I/src/build-{variant}/include"],
+            extra_ldflags=["-L/src/build-{variant}"],
+            extra_libs=["z"],
+        )
+        assert out["ok"] is True
+        for cmd, variant in zip(calls, ("afl", "cov")):
+            assert not any("{variant}" in a for a in cmd)
+            assert f"/src/build-{variant}/libfoo.a" in cmd
+            assert f"-I/src/build-{variant}/include" in cmd
+            assert f"-L/src/build-{variant}" in cmd
+            assert "-I/src/include" in cmd
+            assert "-lz" in cmd
+
+
 class TestStandaloneDriver:
     def _compile(self, tmp_path, driver_exit=0, language="c"):
         src = tmp_path / "h.c"

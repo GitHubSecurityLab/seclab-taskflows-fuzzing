@@ -79,7 +79,9 @@ of a native C/C++ project, it will:
 1. install AFL++ + clang/llvm/lcov + ctags/cscope/graphviz if missing,
 2. fetch the source,
 3. identify candidate fuzz targets (parsers, decoders, validators, …),
-4. analyse the build system,
+4. analyse the build system and build the target library twice: with AFL++
+   edge-coverage instrumentation plus sanitizers, and with clang source-based
+   coverage instrumentation,
 5. write one or more harness candidates per target, build each as both an
    AFL-instrumented `.afl` binary and a coverage-instrumented `.cov` binary,
 6. (optionally) qualify candidates by 60-second coverage and keep the best,
@@ -607,8 +609,8 @@ include suggested patches.
 
 To add a new benchmark project, add an entry to `benchmark/projects.yaml`
 and (optionally) document why in `benchmark/README.md`. Anything that the
-existing `analyze_build_system` stage can build with `clang` + AFL++ flags
-is a reasonable candidate. Pure-C parsers, decoders, and serialisers tend
+existing `analyze_build_system` stage can build with `afl-clang-lto` and
+`clang` is a reasonable candidate. Pure-C parsers, decoders, and serialisers tend
 to work best.
 
 ---

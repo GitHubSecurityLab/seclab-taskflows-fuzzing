@@ -86,6 +86,11 @@ taskflow:
                        - candidate v3 → smart_combined.c
                      The qualifier round will pick the best by 60s coverage.
 
+             Copy paths containing the literal `{variant}` placeholder
+             exactly as written in the notes; do NOT replace it yourself.
+             `compile_harness` resolves it to `afl` / `cov` so each
+             binary links the matching library build.
+
           3. Read the returned dict. Then call `update_harness_build` with the
              returned `afl_binary_path`, `cov_binary_path`, `afl_build_cmd`,
              `cov_build_cmd`, and a `build_status` of either `ok` (when both

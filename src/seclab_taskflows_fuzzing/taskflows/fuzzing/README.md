@@ -68,6 +68,32 @@ Each harness is therefore built **twice**:
 This gives you real **source-line / function / branch** coverage, not just
 edge counts.
 
+### Library variants and `{variant}`
+
+Instrumentation only applies to code compiled with the matching compiler, so
+a library built with plain `clang` would be invisible to AFL's edge
+coverage and sanitizers. `analyze_build_system` therefore builds the
+target library twice, each in its own build directory:
+
+| Variant | Compiler | Environment / flags |
+|---------|----------|---------------------|
+| `afl` | `afl-clang-lto(++)`, `llvm-ar`, `llvm-ranlib` | `AFL_USE_ASAN=1 AFL_USE_UBSAN=1` |
+| `cov` | `clang(++)` | `-fprofile-instr-generate -fcoverage-mapping` |
+
+The `afl` variant's sanitizers must match the harness's `sanitizers`, which
+`write_initial_harnesses` sets to `address,undefined` for every harness. A
+harness built with other sanitizers would mix instrumentation and may fail
+to link.
+
+Without `afl-clang-lto(++)`, the `afl` variant uses `afl-clang-fast(++)`
+instead, matching `compile_harness`.
+
+Target notes record paths into those build directories with a literal
+`{variant}` placeholder (e.g. `-I/src/build-{variant}/include`,
+`/src/build-{variant}/libfoo.a`). `compile_harness` replaces it with `afl`
+or `cov` in `extra_sources`, `extra_cflags` and `extra_ldflags` for
+each binary. Paths without the placeholder are used as-is for both.
+
 ## Structure-aware fuzzing (C5)
 
 For targets whose `input_kind` matches a known format, the taskflow ships

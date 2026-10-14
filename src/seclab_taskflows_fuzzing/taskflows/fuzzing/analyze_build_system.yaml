@@ -10,16 +10,20 @@ globals:
   repo:
 
 # Determine how to build the repo with AFL++ instrumentation.
+# Builds the target library twice (afl / cov variants) so each harness
+# binary links library code instrumented the same way as itself.
 # Outputs:
 #   - Notes (in fuzz_context.target.notes / harness.notes) on the build system,
 #     library entry points, header paths, and link requirements per target.
+#     Paths into the variant build dirs use the `{variant}` placeholder that
+#     compile_harness substitutes per binary.
 taskflow:
   - task:
       model: code_analysis
       must_complete: true
       max_steps: 100
       name: analyse build system
-      description: Detect the repo's build system and confirm we can compile it with clang and AFL++.
+      description: Detect the repo's build system and build its library with AFL++ edge and clang coverage instrumentation.
       agents:
         - seclab_taskflows_fuzzing.personalities.fuzzing_engineer
       user_prompt: |
@@ -28,15 +32,48 @@ taskflow:
         and figure out how to produce a static library or object files we can
         link our fuzz harnesses against.
 
+        Every harness is linked into two binaries, and the library code only
+        gets coverage feedback, sanitizer checks or coverage mapping if it is
+        compiled the same way as the binary it ends up in. So build the
+        library TWICE, once per variant, each in its own build directory:
+
+          - `afl`    → `CC=afl-clang-lto CXX=afl-clang-lto++ AR=llvm-ar RANLIB=llvm-ranlib
+                        AFL_USE_ASAN=1 AFL_USE_UBSAN=1 CFLAGS="-g -O1" CXXFLAGS="-g -O1"`
+          - `cov`    → `CC=clang CXX=clang++` with
+                        `CFLAGS` / `CXXFLAGS` / `LDFLAGS` =
+                        `"-g -O1 -fprofile-instr-generate -fcoverage-mapping"`
+
+        If `afl-clang-lto` is not on PATH (`command -v afl-clang-lto`), use
+        `afl-clang-fast` / `afl-clang-fast++` instead for the `afl` variant,
+        and say so in the target notes. `compile_harness` makes the same
+        choice, so the harness and the library always match. Never use plain
+        `clang` for the `afl` variant.
+
         Use the `shell_exec` tool from local_shell to:
 
           1. Inspect the top-level files (`ls`, `cat README.md`, `cat configure.ac`,
              `cat CMakeLists.txt`, etc.).
-          2. Run `./configure` / `cmake -B build` / `meson setup` as appropriate
-             with `CC=clang CFLAGS="-g -O1"` so the resulting object files are
-             link-compatible with both the AFL build (afl-clang-lto) and the
-             coverage build (clang -fprofile-instr-generate -fcoverage-mapping).
-          3. Build the static library / object files.
+          2. For each variant, configure and build out of tree in a directory
+             whose path differs ONLY in the variant name, e.g.
+             `<repo root>/build-afl`, `<repo root>/build-cov`:
+               - CMake: `cmake -S <repo root> -B <repo root>/build-<variant>
+                 -DBUILD_SHARED_LIBS=OFF` (CMake ignores the `AR` / `RANLIB`
+                 environment variables, so also pass
+                 `-DCMAKE_AR=$(command -v llvm-ar) -DCMAKE_RANLIB=$(command -v llvm-ranlib)`
+                 for `afl`).
+               - Meson: `meson setup <repo root>/build-<variant> --default-library=static`.
+               - autotools: `../configure --disable-shared` from inside
+                 `<repo root>/build-<variant>`.
+               - In-tree-only builds (plain Makefile): copy the source tree per
+                 variant (e.g. `<repo root>-afl`, `<repo root>-cov`) and build
+                 in each copy.
+          3. Build the static library / object files for each variant.
+
+        Tips from the AFL++ docs: always build static libraries; export
+        `AFL_QUIET=1` so AFL++'s stderr output doesn't confuse configure
+        checks; if `configure` rejects the AFL++ compiler, set `AFL_NOOPT=1`
+        for the configure step only and unset it before `make`; pass
+        `--disable-werror` (or equivalent) if warnings break the build.
 
         Once built, for each fuzz target previously stored, append to its `notes`
         (via `store_fuzz_target` again) the precise:
@@ -48,9 +85,17 @@ taskflow:
           - Any required initialisation calls before the target function.
           - Any teardown/reset calls between iterations.
 
-        If the build fails after a reasonable attempt, record what went wrong in
-        the target notes and mark `input_kind` with the prefix `BUILD_FAILED:`
-        so downstream steps can skip the target.
+        In every path that points into a variant build directory, write the
+        literal placeholder `{variant}` instead of `afl` / `cov`, e.g.
+        `<repo root>/build-{variant}/libfoo.a` or
+        `-I<repo root>/build-{variant}/include`. `compile_harness` replaces it
+        with the matching variant for each binary. Paths into the original
+        source tree stay as they are.
+
+        If either the `afl` or the `cov` build fails after a reasonable
+        attempt, record what went wrong in the target notes and mark
+        `input_kind` with the prefix `BUILD_FAILED:` so downstream steps can
+        skip the target.
 
         Be autonomous. Make decisions, don't ask.
       toolboxes:

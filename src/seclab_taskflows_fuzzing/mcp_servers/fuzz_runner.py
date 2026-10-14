@@ -212,15 +212,25 @@ def _afl_compiler() -> str:
     return _which("afl-clang-lto") or _which("afl-clang-fast") or "afl-clang-lto"
 
 
+# Library paths recorded by analyze_build_system may contain this placeholder;
+# compile_harness replaces it with the build variant ("afl" or "cov") so each
+# binary links against the matching instrumented library build.
+_VARIANT_PLACEHOLDER = "{variant}"
+
+
+def _for_variant(args: list[str], variant: str) -> list[str]:
+    return [a.replace(_VARIANT_PLACEHOLDER, variant) for a in args]
+
+
 @mcp.tool()
 def compile_harness(
     harness_source: Annotated[str, Field(description="Absolute path to the harness .c/.cc file")],
     output_basename: Annotated[str, Field(description="Basename for built artefacts (no extension); written under the runner workspace")],
-    extra_sources: Annotated[list[str] | None, Field(description="Additional .c/.cc files to compile and link with the harness")] = None,
-    extra_cflags: Annotated[list[str] | None, Field(description="Additional CFLAGS (e.g. include dirs)")] = None,
-    extra_ldflags: Annotated[list[str] | None, Field(description="Additional LDFLAGS (e.g. -L paths)")] = None,
+    extra_sources: Annotated[list[str] | None, Field(description="Additional .c/.cc/.o/.a files to compile and link with the harness. '{variant}' is replaced with 'afl' or 'cov' for each build (e.g. /src/build-{variant}/libfoo.a)")] = None,
+    extra_cflags: Annotated[list[str] | None, Field(description="Additional CFLAGS (e.g. include dirs). '{variant}' is replaced per build")] = None,
+    extra_ldflags: Annotated[list[str] | None, Field(description="Additional LDFLAGS (e.g. -L paths). '{variant}' is replaced per build")] = None,
     extra_libs: Annotated[list[str] | None, Field(description="Additional libraries to link, without leading -l (e.g. ['z', 'pthread'])")] = None,
-    sanitizers: Annotated[str, Field(description="Comma-separated list, e.g. 'address,undefined'")] = "address,undefined",
+    sanitizers: Annotated[str, Field(description="Comma-separated list, e.g. 'address,undefined'. Must match the afl library variant from analyze_build_system, which uses 'address,undefined'")] = "address,undefined",
     language: Annotated[str, Field(description="'c' or 'c++'")] = "c",
     custom_mutator_source: Annotated[str, Field(description="Optional path to a .c file implementing LLVMFuzzerCustomMutator. Linked into the AFL build only (not the coverage build, which doesn't fuzz). Use write_format_mutator() to generate one for a known format.")] = "",
 ) -> dict:
@@ -232,6 +242,11 @@ def compile_harness(
       ``clang`` (C, no coverage flags) so it doesn't appear in coverage reports.
 
     The agent later runs ``.afl`` for fuzzing and ``.cov`` for coverage replay.
+
+    ``{variant}`` in ``extra_sources`` / ``extra_cflags`` / ``extra_ldflags``
+    is replaced with ``afl`` or ``cov`` for the respective build, so each
+    binary links the target library built with matching instrumentation
+    (see ``analyze_build_system``).
 
     If ``custom_mutator_source`` is set, the AFL build links it in (the
     libAFLDriver shim picks up ``LLVMFuzzerCustomMutator`` automatically).
@@ -264,7 +279,14 @@ def compile_harness(
     if not afl_driver:
         return {"ok": False, "error": "libAFLDriver.a not found (re-run install_afl.sh)"}
 
-    sources = [str(src), *[s for s in extra_sources if s]]
+    extra_sources = [s for s in extra_sources if s]
+
+    def _inputs(variant: str) -> tuple[list[str], list[str], list[str]]:
+        """(sources, cflags, ldflags) with ``{variant}`` resolved for one build."""
+        return ([str(src), *_for_variant(extra_sources, variant)],
+                _for_variant(extra_cflags, variant),
+                _for_variant(extra_ldflags, variant))
+
     libs = [f"-l{lib}" for lib in extra_libs if lib]
     san_flag = f"-fsanitize={sanitizers}" if sanitizers else ""
 
@@ -282,17 +304,19 @@ def compile_harness(
         return {"ok": False, "error": f"standalone driver failed to compile: {log}",
                 "driver_build_cmd": driver_result["cmd"]}
 
+    sources, cflags, ldflags = _inputs("afl")
     afl_cmd = [
         afl_compiler, "-g", "-O1", *(["-x", "c++"] if language == "c++" else []),
-        *sources, *afl_extra_sources, *extra_cflags, san_flag if san_flag else "",
-        *extra_ldflags, str(afl_driver), *libs, "-o", str(afl_bin),
+        *sources, *afl_extra_sources, *cflags, san_flag if san_flag else "",
+        *ldflags, str(afl_driver), *libs, "-o", str(afl_bin),
     ]
     afl_cmd = [c for c in afl_cmd if c]
 
+    sources, cflags, ldflags = _inputs("cov")
     cov_cmd = [
         cov_compiler, "-g", "-O1", "-fprofile-instr-generate", "-fcoverage-mapping",
-        *sources, str(driver_obj), *extra_cflags,
-        *extra_ldflags, *libs, "-o", str(cov_bin),
+        *sources, str(driver_obj), *cflags,
+        *ldflags, *libs, "-o", str(cov_bin),
     ]
 
     afl_env = AFL_ENV_DEFAULTS.copy()
