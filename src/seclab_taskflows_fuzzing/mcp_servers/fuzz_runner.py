@@ -145,6 +145,16 @@ def _materialise_standalone_driver() -> Path:
     return drv
 
 
+def _build_standalone_driver(clang: str, obj: Path) -> dict:
+    """Compile the standalone driver to ``obj`` with plain C ``clang``.
+
+    No coverage flags, so the driver stays out of coverage reports. Compiled
+    as C (even when the ``.cov`` binary is linked with clang++) so it
+    references the unmangled ``LLVMFuzzerTestOneInput``.
+    """
+    return _run([clang, "-g", "-O1", "-c", str(_materialise_standalone_driver()), "-o", str(obj)])
+
+
 def _run(cmd: list[str], cwd: str | None = None, timeout: int = DEFAULT_TIMEOUT,
          env: dict | None = None) -> dict:
     """Run a subprocess; never raise. Return a dict suitable for the agent."""
@@ -218,6 +228,8 @@ def compile_harness(
 
     - ``<basename>.afl`` — instrumented with afl-clang-lto (or afl-clang-fast).
     - ``<basename>.cov`` — instrumented with clang ``-fprofile-instr-generate -fcoverage-mapping``.
+      Its standalone ``main()`` driver is compiled separately with plain
+      ``clang`` (C, no coverage flags) so it doesn't appear in coverage reports.
 
     The agent later runs ``.afl`` for fuzzing and ``.cov`` for coverage replay.
 
@@ -243,14 +255,14 @@ def compile_harness(
     cov_bin = out_dir / f"{output_basename}.cov"
 
     afl_compiler = _afl_compiler()
-    cov_compiler = _which("clang++") if language == "c++" else _which("clang")
-    if not cov_compiler:
-        return {"ok": False, "error": "clang not found on PATH"}
+    c_compiler = _which("clang")
+    cov_compiler = _which("clang++") if language == "c++" else c_compiler
+    if not c_compiler or not cov_compiler:
+        return {"ok": False, "error": f"{'clang' if not c_compiler else 'clang++'} not found on PATH"}
 
     afl_driver = _afl_driver_archive()
     if not afl_driver:
         return {"ok": False, "error": "libAFLDriver.a not found (re-run install_afl.sh)"}
-    standalone_driver = _materialise_standalone_driver()
 
     sources = [str(src), *[s for s in extra_sources if s]]
     libs = [f"-l{lib}" for lib in extra_libs if lib]
@@ -263,6 +275,13 @@ def compile_harness(
             return {"ok": False, "error": f"custom_mutator_source not found: {custom_mutator_source}"}
         afl_extra_sources.append(custom_mutator_source)
 
+    driver_obj = out_dir / f"{output_basename}.driver.o"
+    driver_result = _build_standalone_driver(c_compiler, driver_obj)
+    if driver_result["exit_code"] != 0:
+        log = (driver_result["stdout"] + driver_result["stderr"])[-2000:]
+        return {"ok": False, "error": f"standalone driver failed to compile: {log}",
+                "driver_build_cmd": driver_result["cmd"]}
+
     afl_cmd = [
         afl_compiler, "-g", "-O1", *(["-x", "c++"] if language == "c++" else []),
         *sources, *afl_extra_sources, *extra_cflags, san_flag if san_flag else "",
@@ -272,7 +291,7 @@ def compile_harness(
 
     cov_cmd = [
         cov_compiler, "-g", "-O1", "-fprofile-instr-generate", "-fcoverage-mapping",
-        *sources, str(standalone_driver), *extra_cflags,
+        *sources, str(driver_obj), *extra_cflags,
         *extra_ldflags, *libs, "-o", str(cov_bin),
     ]
 

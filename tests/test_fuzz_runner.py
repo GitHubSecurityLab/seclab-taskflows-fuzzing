@@ -18,6 +18,9 @@ def _make_proc(returncode=0, stdout="", stderr=""):
     return proc
 
 
+_DRIVER_OK = {"exit_code": 0, "timed_out": False, "stdout": "", "stderr": "", "cmd": "clang -c driver"}
+
+
 # ---------------------------------------------------------------------------
 # stack_top_hash
 # ---------------------------------------------------------------------------
@@ -123,6 +126,7 @@ class TestCompileHarness:
 
         with patch.object(fr.shutil, "which", side_effect=which_mock), \
              patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_build_standalone_driver", return_value=_DRIVER_OK), \
              patch.object(fr, "_run", side_effect=run_mock):
             out = fr.compile_harness.fn(
                 harness_source=str(src), output_basename="my_harness",
@@ -171,6 +175,49 @@ class TestCompileHarness:
         afl_env = next(c["env"] for c in calls if c["cmd"][-1].endswith(".afl"))
         assert {k for k in afl_env if k.startswith("AFL_USE_")} == expected
         assert all(afl_env[k] == "1" for k in expected)
+
+
+class TestStandaloneDriver:
+    def _compile(self, tmp_path, driver_exit=0, language="c"):
+        src = tmp_path / "h.c"
+        src.write_text("int LLVMFuzzerTestOneInput(const unsigned char* d, unsigned long n){(void)d;(void)n;return 0;}")
+        fake_driver = tmp_path / "libAFLDriver.a"
+        fake_driver.write_bytes(b"")
+        calls = []
+
+        def run_mock(cmd, **kw):
+            calls.append(cmd)
+            code = driver_exit if "-c" in cmd else 0
+            return {"exit_code": code, "timed_out": False, "stdout": "", "stderr": "boom" if code else "",
+                    "cmd": " ".join(cmd)}
+
+        with patch.object(fr.shutil, "which", side_effect=lambda n: f"/usr/bin/{n}"), \
+             patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_run", side_effect=run_mock), \
+             patch.object(fr, "WORKSPACE", tmp_path), \
+             patch.object(fr, "FUZZ_BUILDS", tmp_path / "builds"):
+            out = fr.compile_harness.fn(harness_source=str(src), output_basename="h", language=language)
+        return out, calls
+
+    @pytest.mark.parametrize(("language", "cov_compiler"), [("c", "clang"), ("c++", "clang++")])
+    def test_driver_compiled_as_plain_c_and_linked_as_object(self, tmp_path, language, cov_compiler):
+        out, calls = self._compile(tmp_path, language=language)
+        assert out["ok"] is True
+        driver_cmd, _afl_cmd, cov_cmd = calls
+        driver_c = str(tmp_path / "_aflpp_standalone_driver.c")
+        driver_o = str(tmp_path / "builds" / "h.driver.o")
+        assert driver_cmd == ["/usr/bin/clang", "-g", "-O1", "-c", driver_c, "-o", driver_o]
+        assert cov_cmd[0] == f"/usr/bin/{cov_compiler}"
+        assert "-fprofile-instr-generate" in cov_cmd
+        assert driver_o in cov_cmd
+        assert driver_c not in cov_cmd
+
+    def test_driver_failure_fails_build(self, tmp_path):
+        out, calls = self._compile(tmp_path, driver_exit=1)
+        assert out["ok"] is False
+        assert "standalone driver failed to compile" in out["error"]
+        assert "boom" in out["error"]
+        assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -510,6 +557,7 @@ class TestFormatAssets:
         with patch.object(fr.shutil, "which",
                           side_effect=lambda n: f"/usr/bin/{n}"), \
              patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_build_standalone_driver", return_value=_DRIVER_OK), \
              patch.object(fr, "_run", side_effect=fake_run):
             out = fr.compile_harness.fn(
                 harness_source=str(src),
