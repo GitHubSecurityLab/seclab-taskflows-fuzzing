@@ -13,10 +13,26 @@
 #
 # To use a different model for a one-off run, pass
 # `-m <other_module_path>` explicitly; that still overrides this default.
+#
+# Both roles use the anthropic_sdk backend (Anthropic Messages API), which
+# caches the system prompt and tool definitions across turns. code_analysis
+# uses high reasoning effort; general_tasks (bookkeeping and reporting) uses
+# low effort.
 
 seclab-taskflow-agent:
   version: "1.0"
   filetype: model_config
 models:
-   code_analysis: claude-sonnet-5
-   general_tasks: claude-sonnet-5
+  code_analysis: claude-sonnet-5
+  general_tasks: claude-sonnet-5
+model_settings:
+  code_analysis:
+    api_type: messages
+    backend: anthropic_sdk
+    reasoning:
+      effort: high
+  general_tasks:
+    api_type: messages
+    backend: anthropic_sdk
+    reasoning:
+      effort: low

@@ -48,6 +48,11 @@ distribution at runtime.
 `seclab-taskflows` is pinned to a git commit because no release of it
 uses `seclab-taskflow-agent` 0.5.0 yet.
 
+The fuzzing model config (`seclab_taskflows_fuzzing.configs.model_config`)
+runs both model roles through the agent's `anthropic_sdk` backend, so
+`AI_API_ENDPOINT` must serve the Anthropic Messages API. The default,
+`api.githubcopilot.com`, does.
+
 ---
 
 ## Table of contents
