@@ -43,7 +43,8 @@ prompt: |
             and `iteration` set to the current iteration number.
           - For (b): modify the harness source file in place, then call
             `store_harness` again so the version is bumped, then `compile_harness`
-            again to rebuild both the AFL and coverage binaries.
+            again to rebuild the AFL, coverage and CMPLOG binaries, and record
+            the new paths with `update_harness_build`.
           - For (c): manually-discovered dictionary entries can be appended
             with `extract_dictionary` or `enrich_dictionary_from_uncovered`;
             the next `run_afl_for` call will pick them up automatically since

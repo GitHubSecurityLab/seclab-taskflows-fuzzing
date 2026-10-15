@@ -18,6 +18,9 @@ def _make_proc(returncode=0, stdout="", stderr=""):
     return proc
 
 
+_DRIVER_OK = {"exit_code": 0, "timed_out": False, "stdout": "", "stderr": "", "cmd": "clang -c driver"}
+
+
 # ---------------------------------------------------------------------------
 # stack_top_hash
 # ---------------------------------------------------------------------------
@@ -96,10 +99,18 @@ class TestCompileHarness:
     def test_missing_clang_short_circuits(self, tmp_path):
         src = tmp_path / "h.c"
         src.write_text("int main(){return 0;}")
-        with patch.object(fr.shutil, "which", side_effect=lambda n: "/usr/bin/afl-clang-lto" if n.startswith("afl-") else None):
+        with patch.object(fr.shutil, "which", side_effect=lambda n: "/usr/bin/afl-clang-lto++" if n.startswith("afl-") else None):
             out = fr.compile_harness.fn(harness_source=str(src), output_basename="x")
         assert out["ok"] is False
         assert "clang not found" in out["error"]
+
+    def test_missing_clangxx_short_circuits(self, tmp_path):
+        src = tmp_path / "h.c"
+        src.write_text("int main(){return 0;}")
+        with patch.object(fr.shutil, "which", side_effect=lambda n: None if n == "clang++" else f"/usr/bin/{n}"):
+            out = fr.compile_harness.fn(harness_source=str(src), output_basename="x")
+        assert out["ok"] is False
+        assert "clang++ not found" in out["error"]
 
     def test_invokes_both_compilers(self, tmp_path):
         src = tmp_path / "h.c"
@@ -109,20 +120,21 @@ class TestCompileHarness:
         fake_driver.write_bytes(b"")
 
         def which_mock(name):
-            if name in ("afl-clang-lto", "afl-clang-fast"):
-                return "/usr/bin/afl-clang-lto"
+            if name in ("afl-clang-lto++", "afl-clang-fast++"):
+                return "/usr/bin/afl-clang-lto++"
             if name in ("clang", "clang++"):
-                return "/usr/bin/clang"
+                return f"/usr/bin/{name}"
             return None
 
         calls = []
-        def run_mock(cmd, cwd=None, timeout=None, env=None):
+        def run_mock(cmd, cwd=None, timeout=None, env=None, unset_env=None):
             calls.append(cmd)
             return {"exit_code": 0, "timed_out": False, "stdout": "", "stderr": "",
                     "cmd": " ".join(cmd)}
 
         with patch.object(fr.shutil, "which", side_effect=which_mock), \
              patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_build_standalone_driver", return_value=_DRIVER_OK), \
              patch.object(fr, "_run", side_effect=run_mock):
             out = fr.compile_harness.fn(
                 harness_source=str(src), output_basename="my_harness",
@@ -130,17 +142,261 @@ class TestCompileHarness:
             )
 
         assert out["ok"] is True
-        assert len(calls) == 2
-        afl_cmd, cov_cmd = calls
-        assert "/usr/bin/afl-clang-lto" in afl_cmd
+        assert len(calls) == 3
+        afl_cmd, cov_cmd, _cmplog_cmd = calls
+        assert afl_cmd[0] == "/usr/bin/afl-clang-lto++"
         assert "-fsanitize=address,undefined" in afl_cmd
         assert str(fake_driver) in afl_cmd
-        assert "/usr/bin/clang" in cov_cmd
+        assert cov_cmd[0] == "/usr/bin/clang++"
         assert "-fprofile-instr-generate" in cov_cmd
         assert "-fcoverage-mapping" in cov_cmd
         assert "-lpthread" in afl_cmd
         assert "-I/include" in afl_cmd
 
+    @pytest.mark.parametrize(("sanitizers", "expected"), [
+        ("address,undefined", {"AFL_USE_ASAN", "AFL_USE_UBSAN"}),
+        ("undefined", {"AFL_USE_UBSAN"}),
+        ("", set()),
+    ])
+    def test_sets_afl_use_only_for_requested_sanitizers(self, tmp_path, sanitizers, expected):
+        # afl-cc enables a sanitizer if its AFL_USE_* variable exists at all.
+        src = tmp_path / "h.c"
+        src.write_text("int LLVMFuzzerTestOneInput(const unsigned char* d, unsigned long n){return 0;}")
+        fake_driver = tmp_path / "libAFLDriver.a"
+        fake_driver.write_bytes(b"")
+
+        def which_mock(name):
+            return f"/usr/bin/{name}" if name.startswith(("afl-", "clang")) else None
+
+        calls = []
+        def run_mock(cmd, env=None, **kwargs):
+            calls.append({"cmd": cmd, "env": env or {}})
+            return {"exit_code": 0, "timed_out": False, "stdout": "", "stderr": "",
+                    "cmd": " ".join(cmd)}
+
+        with patch.object(fr.shutil, "which", side_effect=which_mock), \
+             patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_run", side_effect=run_mock):
+            fr.compile_harness.fn(harness_source=str(src), output_basename="h",
+                                  sanitizers=sanitizers)
+
+        afl_env = next(c["env"] for c in calls if c["cmd"][-1].endswith(".afl"))
+        assert {k for k in afl_env if k.startswith("AFL_USE_")} == expected
+        assert all(afl_env[k] == "1" for k in expected)
+
+
+class TestCmplogBuild:
+    def _compile(self, tmp_path, exit_codes=(0, 0, 0), **kwargs):
+        src = tmp_path / "h.c"
+        src.write_text("int LLVMFuzzerTestOneInput(const unsigned char* d, unsigned long n){(void)d;(void)n;return 0;}")
+        fake_driver = tmp_path / "libAFLDriver.a"
+        fake_driver.write_bytes(b"")
+        calls = []
+        codes = iter(exit_codes)
+
+        def run_mock(cmd, **kw):
+            calls.append({"cmd": cmd, "env": kw.get("env") or {}, "unset_env": kw.get("unset_env") or []})
+            return {"exit_code": next(codes), "timed_out": False, "stdout": "", "stderr": "log",
+                    "cmd": " ".join(cmd)}
+
+        with patch.object(fr.shutil, "which", side_effect=lambda n: f"/usr/bin/{n}"), \
+             patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_build_standalone_driver", return_value=_DRIVER_OK), \
+             patch.object(fr, "_run", side_effect=run_mock), \
+             patch.object(fr, "FUZZ_BUILDS", tmp_path / "builds"):
+            out = fr.compile_harness.fn(harness_source=str(src), output_basename="h", **kwargs)
+        return out, calls, fake_driver
+
+    def test_builds_sanitizer_free_cmplog_binary(self, tmp_path):
+        mutator = tmp_path / "mut.c"
+        mutator.write_text("/* mutator */")
+        out, calls, driver = self._compile(tmp_path, custom_mutator_source=str(mutator))
+        assert out["ok"] is True
+        assert len(calls) == 3
+        cmplog = calls[2]
+        assert cmplog["cmd"][0] == "/usr/bin/afl-clang-lto++"
+        assert cmplog["cmd"][-1].endswith("h.cmplog")
+        assert str(driver) in cmplog["cmd"]
+        assert not any(a.startswith("-fsanitize") for a in cmplog["cmd"])
+        assert str(mutator) not in cmplog["cmd"]
+        assert cmplog["env"]["AFL_LLVM_CMPLOG"] == "1"
+        assert "AFL_USE_ASAN" not in cmplog["env"]
+        assert {"AFL_USE_ASAN", "AFL_USE_UBSAN"} <= set(cmplog["unset_env"])
+        assert out["cmplog_binary_path"].endswith("h.cmplog")
+        assert out["cmplog_build_cmd"]
+
+    def test_cmplog_failure_fails_build(self, tmp_path):
+        out, _, _ = self._compile(tmp_path, exit_codes=(0, 0, 1))
+        assert out["ok"] is False
+        assert out["cmplog_binary_path"] == ""
+        assert "log" in out["cmplog_build_log"]
+
+    def test_cmplog_skipped_when_afl_build_fails(self, tmp_path):
+        out, calls, _ = self._compile(tmp_path, exit_codes=(1, 0))
+        assert out["ok"] is False
+        assert len(calls) == 2
+        assert out["cmplog_binary_path"] == ""
+
+    def test_stale_cmplog_binary_removed(self, tmp_path):
+        stale = tmp_path / "builds" / "h.cmplog"
+        stale.parent.mkdir(parents=True)
+        stale.write_bytes(b"old")
+        out, _, _ = self._compile(tmp_path, exit_codes=(0, 0, 1))
+        assert not stale.exists()
+        assert out["cmplog_binary_path"] == ""
+
+
+class TestLtoAndVariants:
+    def _compile(self, tmp_path, which=None, harness="h.cc", **kwargs):
+        src = tmp_path / harness
+        src.write_text("extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*, unsigned long){return 0;}")
+        fake_driver = tmp_path / "libAFLDriver.a"
+        fake_driver.write_bytes(b"")
+        calls = []
+
+        def run_mock(cmd, **kw):
+            calls.append(cmd)
+            return {"exit_code": 0, "timed_out": False, "stdout": "", "stderr": "", "cmd": " ".join(cmd)}
+
+        with patch.object(fr.shutil, "which", side_effect=which or (lambda n: f"/usr/bin/{n}")), \
+             patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_build_standalone_driver", return_value=_DRIVER_OK), \
+             patch.object(fr, "_run", side_effect=run_mock), \
+             patch.object(fr, "FUZZ_BUILDS", tmp_path / "builds"):
+            out = fr.compile_harness.fn(harness_source=str(src), output_basename="h", **kwargs)
+        return out, calls
+
+    @pytest.mark.parametrize("harness", ["h.c", "h.cc"])
+    def test_always_links_with_cxx_drivers(self, tmp_path, harness):
+        out, calls = self._compile(tmp_path, harness=harness)
+        assert out["ok"] is True
+        afl_cmd, cov_cmd, cmplog_cmd = calls
+        assert afl_cmd[0] == "/usr/bin/afl-clang-lto++"
+        assert cmplog_cmd[0] == "/usr/bin/afl-clang-lto++"
+        assert cov_cmd[0] == "/usr/bin/clang++"
+        assert out["warning"] == ""
+
+    def test_c_sources_compiled_as_c(self, tmp_path):
+        mutator = tmp_path / "mut.c"
+        mutator.write_text("/* mutator */")
+        out, calls = self._compile(
+            tmp_path, harness="h.c", custom_mutator_source=str(mutator),
+            extra_sources=["/src/a.c", "/src/b.cc", "/src/build-{variant}/libfoo.a"],
+        )
+        assert out["ok"] is True
+        harness = str(tmp_path / "h.c")
+
+        def wrapped(cmd, path):
+            i = cmd.index(path)
+            return cmd[i - 2:i] == ["-x", "c"] and cmd[i + 1:i + 3] == ["-x", "none"]
+
+        for cmd, variant in zip(calls, ("afl", "cov", "cmplog")):
+            assert wrapped(cmd, harness)
+            assert wrapped(cmd, "/src/a.c")
+            assert cmd[cmd.index("/src/b.cc") - 1] == "none"
+            assert cmd[cmd.index(f"/src/build-{variant}/libfoo.a") - 1] == "/src/b.cc"
+            assert cmd.count("-x") == (6 if variant == "afl" else 4)
+        assert wrapped(calls[0], str(mutator))
+
+    def test_cxx_harness_not_wrapped(self, tmp_path):
+        out, calls = self._compile(tmp_path, harness="h.cc")
+        assert out["ok"] is True
+        for cmd in calls:
+            assert "-x" not in cmd
+
+    def test_falls_back_to_afl_clang_fast_with_warning(self, tmp_path):
+        out, calls = self._compile(
+            tmp_path,
+            which=lambda n: None if n.startswith("afl-clang-lto") else f"/usr/bin/{n}",
+        )
+        assert out["ok"] is True
+        afl_cmd, _cov_cmd, cmplog_cmd = calls
+        assert afl_cmd[0] == "/usr/bin/afl-clang-fast++"
+        assert cmplog_cmd[0] == "/usr/bin/afl-clang-fast++"
+        assert "afl-clang-lto++ not found, using afl-clang-fast++" in out["warning"]
+
+    def test_no_afl_compiler_fails(self, tmp_path):
+        out, calls = self._compile(
+            tmp_path,
+            which=lambda n: None if n.startswith("afl-clang-") else f"/usr/bin/{n}",
+        )
+        assert out["ok"] is False
+        assert "neither afl-clang-lto++ nor afl-clang-fast++" in out["error"]
+        assert calls == []
+
+    def test_variant_placeholder_resolved_per_build(self, tmp_path):
+        out, calls = self._compile(
+            tmp_path,
+            extra_sources=["/src/build-{variant}/libfoo.a"],
+            extra_cflags=["-I/src/include", "-I/src/build-{variant}/include"],
+            extra_ldflags=["-L/src/build-{variant}"],
+            extra_libs=["z"],
+        )
+        assert out["ok"] is True
+        for cmd, variant in zip(calls, ("afl", "cov", "cmplog")):
+            assert not any("{variant}" in a for a in cmd)
+            assert f"/src/build-{variant}/libfoo.a" in cmd
+            assert f"-I/src/build-{variant}/include" in cmd
+            assert f"-L/src/build-{variant}" in cmd
+            assert "-I/src/include" in cmd
+            assert "-lz" in cmd
+
+
+class TestStandaloneDriver:
+    def _compile(self, tmp_path, driver_exit=0, harness="h.cc"):
+        src = tmp_path / harness
+        src.write_text("extern \"C\" int LLVMFuzzerTestOneInput(const unsigned char*, unsigned long){return 0;}")
+        fake_driver = tmp_path / "libAFLDriver.a"
+        fake_driver.write_bytes(b"")
+        calls = []
+
+        def run_mock(cmd, **kw):
+            calls.append(cmd)
+            code = driver_exit if "-c" in cmd else 0
+            return {"exit_code": code, "timed_out": False, "stdout": "", "stderr": "boom" if code else "",
+                    "cmd": " ".join(cmd)}
+
+        with patch.object(fr.shutil, "which", side_effect=lambda n: f"/usr/bin/{n}"), \
+             patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_run", side_effect=run_mock), \
+             patch.object(fr, "WORKSPACE", tmp_path), \
+             patch.object(fr, "FUZZ_BUILDS", tmp_path / "builds"):
+            out = fr.compile_harness.fn(harness_source=str(src), output_basename="h")
+        return out, calls
+
+    @pytest.mark.parametrize("harness", ["h.c", "h.cc"])
+    def test_driver_compiled_as_plain_c_and_linked_as_object(self, tmp_path, harness):
+        out, calls = self._compile(tmp_path, harness=harness)
+        assert out["ok"] is True
+        driver_cmd, _afl_cmd, cov_cmd, _cmplog_cmd = calls
+        driver_c = str(tmp_path / "_aflpp_standalone_driver.c")
+        driver_o = str(tmp_path / "builds" / "h.driver.o")
+        assert driver_cmd == ["/usr/bin/clang", "-g", "-O1", "-c", driver_c, "-o", driver_o]
+        assert cov_cmd[0] == "/usr/bin/clang++"
+        assert "-fprofile-instr-generate" in cov_cmd
+        assert driver_o in cov_cmd
+        assert driver_c not in cov_cmd
+
+    def test_driver_failure_fails_build(self, tmp_path):
+        out, calls = self._compile(tmp_path, driver_exit=1)
+        assert out["ok"] is False
+        assert "standalone driver failed to compile" in out["error"]
+        assert "boom" in out["error"]
+        assert len(calls) == 1
+
+
+def test_run_unset_env_removes_inherited_vars(monkeypatch):
+    monkeypatch.setenv("AFL_USE_ASAN", "1")
+    captured = {}
+
+    def fake_subprocess_run(cmd, **kw):
+        captured["env"] = kw["env"]
+        return _make_proc()
+
+    with patch.object(fr.subprocess, "run", side_effect=fake_subprocess_run):
+        fr._run(["true"], env={"AFL_LLVM_CMPLOG": "1"}, unset_env=["AFL_USE_ASAN"])
+    assert "AFL_USE_ASAN" not in captured["env"]
+    assert captured["env"]["AFL_LLVM_CMPLOG"] == "1"
 
 # ---------------------------------------------------------------------------
 # run_afl_for: error paths only (real AFL runs are out of scope)
@@ -151,6 +407,7 @@ class TestRunAflFor:
         with patch.object(fr.shutil, "which", return_value="/usr/bin/afl-fuzz"):
             out = fr.run_afl_for.fn(
                 afl_binary_path=str(tmp_path / "no_such"),
+                cmplog_binary_path=str(tmp_path / "no_such.cmplog"),
                 seed_dir=str(tmp_path / "seeds"),
                 output_dir=str(tmp_path / "out"),
                 seconds=1,
@@ -164,12 +421,82 @@ class TestRunAflFor:
         with patch.object(fr.shutil, "which", return_value=None):
             out = fr.run_afl_for.fn(
                 afl_binary_path=str(bin_path),
+                cmplog_binary_path=str(bin_path),
                 seed_dir=str(tmp_path / "seeds"),
                 output_dir=str(tmp_path / "out"),
                 seconds=1,
             )
         assert out["ok"] is False
         assert "afl-fuzz not on PATH" in out["error"]
+
+    def _setup(self, tmp_path):
+        bin_path = tmp_path / "h.afl"
+        bin_path.write_bytes(b"\x7fELF")
+        cmplog = tmp_path / "h.cmplog"
+        cmplog.write_bytes(b"\x7fELF")
+        return bin_path, cmplog
+
+    def test_single_instance_passes_cmplog(self, tmp_path):
+        bin_path, cmplog = self._setup(tmp_path)
+        calls = []
+
+        def run_mock(cmd, **kw):
+            calls.append(cmd)
+            return {"exit_code": 0, "timed_out": False, "stdout": "", "stderr": "", "cmd": ""}
+
+        with patch.object(fr.shutil, "which", return_value="/usr/bin/afl-fuzz"), \
+             patch.object(fr, "_run", side_effect=run_mock):
+            out = fr.run_afl_for.fn(
+                afl_binary_path=str(bin_path), cmplog_binary_path=str(cmplog),
+                seed_dir=str(tmp_path / "seeds"), output_dir=str(tmp_path / "out"), seconds=1,
+            )
+        cmd = calls[0]
+        sep = cmd.index("--")
+        assert cmd[cmd.index("-c") + 1] == str(cmplog)
+        assert cmd.index("-c") < sep
+        assert "-l" not in cmd
+        assert cmd[sep + 1] == str(bin_path)
+        assert out["cmplog_workers"] == ["default"]
+
+    def test_parallel_cmplog_on_master_and_first_secondary(self, tmp_path):
+        bin_path, cmplog = self._setup(tmp_path)
+        cmds = []
+
+        def popen_mock(cmd, **kw):
+            cmds.append(cmd)
+            p = MagicMock()
+            p.communicate.return_value = (b"", b"")
+            p.returncode = 0
+            return p
+
+        with patch.object(fr.shutil, "which", return_value="/usr/bin/afl-fuzz"), \
+             patch.object(fr.subprocess, "Popen", side_effect=popen_mock):
+            out = fr.run_afl_for.fn(
+                afl_binary_path=str(bin_path), cmplog_binary_path=str(cmplog),
+                seed_dir=str(tmp_path / "seeds"), output_dir=str(tmp_path / "out"),
+                seconds=1, parallel_workers=3,
+            )
+        master, sec1, sec2 = cmds
+        assert "-M" in master and "-c" in master and "-l" not in master
+        assert "-S" in sec1 and sec1[sec1.index("-c") + 1] == str(cmplog)
+        assert sec1[sec1.index("-l") + 1] == "2AT"
+        assert "-c" not in sec2
+        assert out["cmplog_workers"] == ["default", "secondary_1"]
+
+    @pytest.mark.parametrize("cmplog_path", ["", "gone.cmplog"])
+    def test_missing_cmplog_binary_fails(self, tmp_path, cmplog_path):
+        bin_path, _ = self._setup(tmp_path)
+        cmplog_arg = str(tmp_path / cmplog_path) if cmplog_path else ""
+
+        with patch.object(fr.shutil, "which", return_value="/usr/bin/afl-fuzz"), \
+             patch.object(fr, "_run") as run_mock:
+            out = fr.run_afl_for.fn(
+                afl_binary_path=str(bin_path), cmplog_binary_path=cmplog_arg,
+                seed_dir=str(tmp_path / "seeds"), output_dir=str(tmp_path / "out"), seconds=1,
+            )
+        assert out["ok"] is False
+        assert "cmplog binary not found" in out["error"]
+        run_mock.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +806,7 @@ class TestFormatAssets:
         with patch.object(fr.shutil, "which",
                           side_effect=lambda n: f"/usr/bin/{n}"), \
              patch.object(fr, "_afl_driver_archive", return_value=fake_driver), \
+             patch.object(fr, "_build_standalone_driver", return_value=_DRIVER_OK), \
              patch.object(fr, "_run", side_effect=fake_run):
             out = fr.compile_harness.fn(
                 harness_source=str(src),

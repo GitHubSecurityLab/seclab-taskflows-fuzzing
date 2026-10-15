@@ -74,6 +74,9 @@ def _migrate(eng) -> None:
         "coverage_report": [
             ("html_path", "TEXT"),
         ],
+        "harness": [
+            ("cmplog_binary_path", "TEXT"),
+        ],
     }
     with eng.connect() as conn:
         for table, cols in expected.items():
@@ -177,6 +180,8 @@ def update_harness_build(
     build_cmd_afl: Annotated[str, Field(description="Command used for AFL build")] = "",
     build_cmd_cov: Annotated[str, Field(description="Command used for coverage build")] = "",
     build_status: Annotated[str, Field(description="'ok' or short error explanation")] = "ok",
+    cmplog_binary_path: Annotated[str, Field(description="Path to the CMPLOG binary from compile_harness, '' if not built")] = "",
+    notes: Annotated[str, Field(description="Appended to the harness notes, e.g. the warning returned by compile_harness")] = "",
 ) -> str:
     """Persist build artefacts/status for a harness."""
     with Session(_ENGINE) as session:
@@ -185,9 +190,12 @@ def update_harness_build(
             return f"harness {harness_id} not found"
         h.afl_binary_path = afl_binary_path or h.afl_binary_path
         h.cov_binary_path = cov_binary_path or h.cov_binary_path
+        h.cmplog_binary_path = cmplog_binary_path or h.cmplog_binary_path
         h.build_cmd_afl = build_cmd_afl or h.build_cmd_afl
         h.build_cmd_cov = build_cmd_cov or h.build_cmd_cov
         h.build_status = build_status
+        if notes:
+            h.notes = f"{h.notes}\n{notes}" if h.notes else notes
         session.commit()
         return f"updated harness {harness_id} build_status={build_status}"
 
@@ -200,6 +208,7 @@ def get_harnesses(repo: Annotated[str, Field(description="owner/repo")]) -> list
         return [{
             "id": h.id, "target_id": h.target_id, "harness_path": h.harness_path,
             "afl_binary_path": h.afl_binary_path, "cov_binary_path": h.cov_binary_path,
+            "cmplog_binary_path": h.cmplog_binary_path,
             "version": h.version, "build_status": h.build_status,
             "sanitizers": h.sanitizers, "notes": h.notes,
         } for h in rows]

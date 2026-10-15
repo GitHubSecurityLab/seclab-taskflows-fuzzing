@@ -79,9 +79,12 @@ of a native C/C++ project, it will:
 1. install AFL++ + clang/llvm/lcov + ctags/cscope/graphviz if missing,
 2. fetch the source,
 3. identify candidate fuzz targets (parsers, decoders, validators, …),
-4. analyse the build system,
-5. write one or more harness candidates per target, build each as both an
-   AFL-instrumented `.afl` binary and a coverage-instrumented `.cov` binary,
+4. analyse the build system and build the target library three times: with
+   AFL++ edge-coverage instrumentation plus sanitizers, with AFL++ CMPLOG
+   instrumentation, and with clang source-based coverage instrumentation,
+5. write one or more harness candidates per target, build each as an
+   AFL++-instrumented `.afl` binary, an AFL++ CMPLOG-instrumented `.cmplog`
+   binary and a clang coverage-instrumented `.cov` binary,
 6. (optionally) qualify candidates by 60-second coverage and keep the best,
 7. run a fuzz/coverage/improve loop with doubling time budgets,
 8. triage every crash, confirm previously-known crashes still reproduce, and
@@ -157,12 +160,21 @@ Key design rules:
 - **Idempotency wherever cheap.** Re-running the pipeline against the same
   repo upserts targets/harnesses/runs rather than duplicating them. This is
   what makes the persistent corpus and the cross-campaign carryover work.
-- **Two binaries per harness.** AFL's edge instrumentation is unsuitable for
-  human-readable coverage reports, so each harness is built twice: once with
-  `afl-clang-lto -fsanitize=address,undefined` (the `.afl` binary) and once
-  with `clang -fprofile-instr-generate -fcoverage-mapping` (the `.cov`
+- **Three binaries per harness.** AFL's edge instrumentation is unsuitable for
+  human-readable coverage reports, so each harness is built with
+  `afl-clang-lto++ -fsanitize=address,undefined` (the `.afl` binary) and
+  with `clang++ -fprofile-instr-generate -fcoverage-mapping` (the `.cov`
   binary). The `.afl` binary fuzzes; the `.cov` binary replays the AFL
-  queue to produce real source-line/function/branch coverage.
+  queue to produce real source-line/function/branch coverage. A third,
+  sanitizer-free `.cmplog` binary (`afl-clang-lto++` with
+  `AFL_LLVM_CMPLOG=1`) is passed to `afl-fuzz -c` so AFL++'s CMPLOG/RedQueen
+  stage can solve magic values and checksums. All three builds are
+  mandatory: a failed CMPLOG build fails the harness build, and
+  `run_afl_for` refuses to run without a `.cmplog` binary. If
+  `afl-clang-lto++` isn't installed, the AFL++ builds use
+  `afl-clang-fast++` instead and `compile_harness` returns a warning. The
+  C++ drivers link the C++ standard library, so C and C++ harnesses and
+  libraries both work; `.c` files are still compiled as C (`-x c`).
 
 ---
 
@@ -175,7 +187,7 @@ Key design rules:
 | 3 | Identify fuzz targets | `seclab_taskflows_fuzzing.taskflows.fuzzing.identify_fuzz_targets` |
 | 4 | Analyse build system | `seclab_taskflows_fuzzing.taskflows.fuzzing.analyze_build_system` |
 | 5a | Write initial harnesses (×N candidates if requested) | `seclab_taskflows_fuzzing.taskflows.fuzzing.write_initial_harnesses` |
-| 5b | Build harnesses (AFL + coverage) | `seclab_taskflows_fuzzing.taskflows.fuzzing.build_harnesses` |
+| 5b | Build harnesses (AFL++ edge + AFL++ CMPLOG + clang coverage) | `seclab_taskflows_fuzzing.taskflows.fuzzing.build_harnesses` |
 | 5c | Qualify candidates (when `HARNESS_CANDIDATES > 1`) | `seclab_taskflows_fuzzing.taskflows.fuzzing.qualify_harnesses` |
 | 6 | Fuzz/coverage/improve loop (×N iterations) | `seclab_taskflows_fuzzing.taskflows.fuzzing.fuzz_iteration` |
 | 7 | Triage crashes | `seclab_taskflows_fuzzing.taskflows.fuzzing.triage_crashes` |
@@ -202,7 +214,7 @@ Per iteration, per harness, the agent:
 
 1. Asks `get_persistent_corpus_dir(harness_id)` for this harness's stable
    corpus dir.
-2. Calls `run_afl_for(afl_binary_path, seed_dir=<persistent corpus>,
+2. Calls `run_afl_for(afl_binary_path, cmplog_binary_path, seed_dir=<persistent corpus>,
    output_dir=<run dir>, seconds=<budget>, dictionary=<auto.dict>)`.
 3. Calls `run_coverage(cov_binary_path, inputs_dir=<run>/default/queue,
    output_dir=<run>/coverage)` to produce an LCOV tracefile and HTML report.
@@ -424,7 +436,7 @@ All under `~/.local/share/seclab-taskflow-agent/seclab-taskflows/`.
 | Path | Contents |
 |------|----------|
 | `fuzz_context/fuzz_context.db` | SQLite — targets, harnesses, runs, coverage, crashes, verdicts, call graphs, harness suggestions, iteration notes |
-| `fuzz_runner/builds/` | Built `.afl` and `.cov` binaries |
+| `fuzz_runner/builds/` | Built `.afl`, `.cov` and `.cmplog` binaries |
 | `fuzz_runner/runs/` | AFL output dirs + LCOV files + HTML coverage reports |
 | `fuzz_runner/corpus/harness_<id>/` | Persistent corpus per harness (carries across iterations & campaigns) |
 | `fuzz_runner/repo/<owner>__<repo>/REPORT.md` | Markdown campaign summary, crashes grouped by verdict |
@@ -440,7 +452,7 @@ Tables in `fuzz_context.db` (SQLite via SQLAlchemy):
 | Table | Columns of interest |
 |-------|--------------------|
 | `fuzz_target` | `repo, file, function, signature, input_kind` |
-| `harness` | `target_id, repo, harness_path, afl_binary_path, cov_binary_path, build_status, version, sanitizers` |
+| `harness` | `target_id, repo, harness_path, afl_binary_path, cov_binary_path, cmplog_binary_path, build_status, version, sanitizers` |
 | `seed_corpus` | `target_id, source, path, bytes_count, added_in_iteration` |
 | `fuzz_run` | `harness_id, iteration_number, exec_per_sec, paths_total, crashes_count, status, output_dir, started_at, ended_at` |
 | `coverage_report` | `run_id, lines_total, lines_hit, line_pct, fns_*, branches_*, lcov_path, html_path` |
@@ -477,7 +489,7 @@ calling MCP tools. The full set, grouped by purpose:
 ### Build / fuzz / coverage (`fuzz_runner.py`)
 
 - `check_tooling`, `workspace_paths`
-- `compile_harness` — builds `.afl` and `.cov` binaries
+- `compile_harness` — builds `.afl`, `.cmplog` and `.cov` binaries
 - `run_afl_for`, `cmin`, `tmin`, `replay_under_asan`, `reproduce_crash`
 - `run_coverage` — replays AFL queue against the `.cov` binary, exports LCOV
 - `extract_dictionary` — mine printable strings from a binary
@@ -607,8 +619,8 @@ include suggested patches.
 
 To add a new benchmark project, add an entry to `benchmark/projects.yaml`
 and (optionally) document why in `benchmark/README.md`. Anything that the
-existing `analyze_build_system` stage can build with `clang` + AFL++ flags
-is a reasonable candidate. Pure-C parsers, decoders, and serialisers tend
+existing `analyze_build_system` stage can build with `afl-clang-lto` and
+`clang` is a reasonable candidate. Pure-C parsers, decoders, and serialisers tend
 to work best.
 
 ---

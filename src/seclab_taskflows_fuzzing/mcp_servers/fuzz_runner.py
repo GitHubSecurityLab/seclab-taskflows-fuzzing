@@ -145,12 +145,24 @@ def _materialise_standalone_driver() -> Path:
     return drv
 
 
+def _build_standalone_driver(clang: str, obj: Path) -> dict:
+    """Compile the standalone driver to ``obj`` with plain C ``clang``.
+
+    No coverage flags, so the driver stays out of coverage reports. Compiled
+    as C (the ``.cov`` binary is linked with clang++) so it references the
+    unmangled ``extern "C"`` ``LLVMFuzzerTestOneInput``.
+    """
+    return _run([clang, "-g", "-O1", "-c", str(_materialise_standalone_driver()), "-o", str(obj)])
+
+
 def _run(cmd: list[str], cwd: str | None = None, timeout: int = DEFAULT_TIMEOUT,
-         env: dict | None = None) -> dict:
+         env: dict | None = None, unset_env: list[str] | None = None) -> dict:
     """Run a subprocess; never raise. Return a dict suitable for the agent."""
     real_env = os.environ.copy()
     if env:
         real_env.update(env)
+    for key in unset_env or []:
+        real_env.pop(key, None)
     logging.debug("exec: %s (cwd=%s timeout=%d)", " ".join(shlex.quote(c) for c in cmd), cwd, timeout)
     try:
         proc = subprocess.run(
@@ -198,35 +210,92 @@ def check_tooling() -> dict:
 # Building harnesses
 # ---------------------------------------------------------------------------
 
-def _afl_compiler() -> str:
-    return _which("afl-clang-lto") or _which("afl-clang-fast") or "afl-clang-lto"
+def _afl_compiler() -> tuple[str | None, str]:
+    """Return ``(compiler path, warning)`` for the AFL++ builds.
+
+    Prefers afl-clang-lto++; falls back to afl-clang-fast++ with a warning.
+    The path is None when neither is on PATH.
+    """
+    lto, fast = "afl-clang-lto++", "afl-clang-fast++"
+    if path := _which(lto):
+        return path, ""
+    if path := _which(fast):
+        return path, (f"{lto} not found, using {fast}: no collision-free edge IDs or "
+                      "LTO autodictionary (install lld and re-run install_afl.sh)")
+    return None, ""
+
+
+def _source_args(paths: list[str]) -> list[str]:
+    """Inputs for a C++ compiler driver, with ``.c`` files compiled as C.
+
+    clang++ would compile ``.c`` files as C++ (rejecting valid C and mangling
+    ``LLVMFuzzerTestOneInput``), so each is wrapped in ``-x c … -x none``.
+    Other inputs keep clang's extension-based detection.
+    """
+    args: list[str] = []
+    for p in paths:
+        args += ["-x", "c", p, "-x", "none"] if p.endswith(".c") else [p]
+    return args
+
+
+# Library paths recorded by analyze_build_system may contain this placeholder;
+# compile_harness replaces it with the build variant ("afl", "cmplog" or "cov")
+# so each binary links against the matching instrumented library build.
+_VARIANT_PLACEHOLDER = "{variant}"
+
+
+def _for_variant(args: list[str], variant: str) -> list[str]:
+    return [a.replace(_VARIANT_PLACEHOLDER, variant) for a in args]
+
+
+# afl-cc enables a sanitizer when its AFL_USE_* variable is merely *present*
+# (even "0"), so the sanitizer-free CMPLOG build must remove them entirely.
+# afl-cc also refuses to combine CMPLOG with AFL_LLVM_VALUE_PROFILE.
+_CMPLOG_UNSET_ENV = [
+    "AFL_USE_ASAN", "AFL_USE_UBSAN", "AFL_USE_MSAN", "AFL_USE_TSAN",
+    "AFL_USE_LSAN", "AFL_USE_CFISAN", "AFL_LLVM_VALUE_PROFILE",
+]
 
 
 @mcp.tool()
 def compile_harness(
     harness_source: Annotated[str, Field(description="Absolute path to the harness .c/.cc file")],
     output_basename: Annotated[str, Field(description="Basename for built artefacts (no extension); written under the runner workspace")],
-    extra_sources: Annotated[list[str] | None, Field(description="Additional .c/.cc files to compile and link with the harness")] = None,
-    extra_cflags: Annotated[list[str] | None, Field(description="Additional CFLAGS (e.g. include dirs)")] = None,
-    extra_ldflags: Annotated[list[str] | None, Field(description="Additional LDFLAGS (e.g. -L paths)")] = None,
+    extra_sources: Annotated[list[str] | None, Field(description="Additional .c/.cc/.o/.a files to compile and link with the harness. '{variant}' is replaced with 'afl', 'cmplog' or 'cov' for each build (e.g. /src/build-{variant}/libfoo.a)")] = None,
+    extra_cflags: Annotated[list[str] | None, Field(description="Additional CFLAGS (e.g. include dirs). '{variant}' is replaced per build")] = None,
+    extra_ldflags: Annotated[list[str] | None, Field(description="Additional LDFLAGS (e.g. -L paths). '{variant}' is replaced per build")] = None,
     extra_libs: Annotated[list[str] | None, Field(description="Additional libraries to link, without leading -l (e.g. ['z', 'pthread'])")] = None,
-    sanitizers: Annotated[str, Field(description="Comma-separated list, e.g. 'address,undefined'")] = "address,undefined",
-    language: Annotated[str, Field(description="'c' or 'c++'")] = "c",
+    sanitizers: Annotated[str, Field(description="Comma-separated list, e.g. 'address,undefined'. Must match the afl library variant from analyze_build_system, which uses 'address,undefined'")] = "address,undefined",
     custom_mutator_source: Annotated[str, Field(description="Optional path to a .c file implementing LLVMFuzzerCustomMutator. Linked into the AFL build only (not the coverage build, which doesn't fuzz). Use write_format_mutator() to generate one for a known format.")] = "",
 ) -> dict:
-    """Build TWO binaries from one harness:
+    """Build the three fuzzing binaries for one harness:
 
-    - ``<basename>.afl`` — instrumented with afl-clang-lto (or afl-clang-fast).
-    - ``<basename>.cov`` — instrumented with clang ``-fprofile-instr-generate -fcoverage-mapping``.
+    - ``<basename>.afl`` — instrumented with afl-clang-lto++. If it isn't on
+      PATH, afl-clang-fast++ is used and the result carries a ``warning``.
+    - ``<basename>.cov`` — instrumented with clang++ ``-fprofile-instr-generate -fcoverage-mapping``.
+      Its standalone ``main()`` driver is compiled separately with plain
+      ``clang`` (C, no coverage flags) so it doesn't appear in coverage reports.
+    - ``<basename>.cmplog`` — same AFL++ compiler with ``AFL_LLVM_CMPLOG=1`` and
+      no sanitizers; passed to ``run_afl_for`` as ``cmplog_binary_path`` so
+      afl-fuzz can solve magic bytes / checksums.
+
+    All three are built with the C++ compiler drivers so C++ harnesses and
+    C++ target libraries link (C++ standard library and sanitizer C++
+    runtimes). ``.c`` sources are still compiled as C via ``-x c``.
 
     The agent later runs ``.afl`` for fuzzing and ``.cov`` for coverage replay.
 
+    ``{variant}`` in ``extra_sources`` / ``extra_cflags`` / ``extra_ldflags``
+    is replaced with ``afl``, ``cmplog`` or ``cov`` for the respective build,
+    so each binary links the target library built with matching
+    instrumentation (see ``analyze_build_system``).
+
     If ``custom_mutator_source`` is set, the AFL build links it in (the
     libAFLDriver shim picks up ``LLVMFuzzerCustomMutator`` automatically).
-    The coverage build never includes a custom mutator — it only replays
-    inputs.
+    The coverage and CMPLOG builds never include a custom mutator.
 
-    Returns a dict describing both builds.
+    ``ok`` is true only when all three builds succeed. The CMPLOG build is
+    skipped (and ``ok`` is false) when the AFL build already failed.
     """
     extra_sources = extra_sources or []
     extra_cflags = extra_cflags or []
@@ -241,18 +310,31 @@ def compile_harness(
     out_dir.mkdir(parents=True, exist_ok=True)
     afl_bin = out_dir / f"{output_basename}.afl"
     cov_bin = out_dir / f"{output_basename}.cov"
+    cmplog_bin = out_dir / f"{output_basename}.cmplog"
 
-    afl_compiler = _afl_compiler()
-    cov_compiler = _which("clang++") if language == "c++" else _which("clang")
-    if not cov_compiler:
-        return {"ok": False, "error": "clang not found on PATH"}
+    afl_compiler, afl_warning = _afl_compiler()
+    c_compiler = _which("clang")
+    cov_compiler = _which("clang++")
+    if not c_compiler or not cov_compiler:
+        return {"ok": False, "error": f"{'clang' if not c_compiler else 'clang++'} not found on PATH"}
+    if not afl_compiler:
+        return {"ok": False, "error": "neither afl-clang-lto++ nor afl-clang-fast++ "
+                                      "found on PATH (re-run install_afl.sh)"}
+    if afl_warning:
+        logging.warning("compile_harness: %s", afl_warning)
 
     afl_driver = _afl_driver_archive()
     if not afl_driver:
         return {"ok": False, "error": "libAFLDriver.a not found (re-run install_afl.sh)"}
-    standalone_driver = _materialise_standalone_driver()
 
-    sources = [str(src), *[s for s in extra_sources if s]]
+    extra_sources = [s for s in extra_sources if s]
+
+    def _inputs(variant: str) -> tuple[list[str], list[str], list[str]]:
+        """(sources, cflags, ldflags) with ``{variant}`` resolved for one build."""
+        return ([str(src), *_for_variant(extra_sources, variant)],
+                _for_variant(extra_cflags, variant),
+                _for_variant(extra_ldflags, variant))
+
     libs = [f"-l{lib}" for lib in extra_libs if lib]
     san_flag = f"-fsanitize={sanitizers}" if sanitizers else ""
 
@@ -263,35 +345,66 @@ def compile_harness(
             return {"ok": False, "error": f"custom_mutator_source not found: {custom_mutator_source}"}
         afl_extra_sources.append(custom_mutator_source)
 
+    driver_obj = out_dir / f"{output_basename}.driver.o"
+    driver_result = _build_standalone_driver(c_compiler, driver_obj)
+    if driver_result["exit_code"] != 0:
+        log = (driver_result["stdout"] + driver_result["stderr"])[-2000:]
+        return {"ok": False, "error": f"standalone driver failed to compile: {log}",
+                "driver_build_cmd": driver_result["cmd"]}
+
+    sources, cflags, ldflags = _inputs("afl")
     afl_cmd = [
-        afl_compiler, "-g", "-O1", *(["-x", "c++"] if language == "c++" else []),
-        *sources, *afl_extra_sources, *extra_cflags, san_flag if san_flag else "",
-        *extra_ldflags, str(afl_driver), *libs, "-o", str(afl_bin),
+        afl_compiler, "-g", "-O1",
+        *_source_args([*sources, *afl_extra_sources]), *cflags, san_flag if san_flag else "",
+        *ldflags, str(afl_driver), *libs, "-o", str(afl_bin),
     ]
     afl_cmd = [c for c in afl_cmd if c]
 
+    sources, cflags, ldflags = _inputs("cov")
     cov_cmd = [
         cov_compiler, "-g", "-O1", "-fprofile-instr-generate", "-fcoverage-mapping",
-        *sources, str(standalone_driver), *extra_cflags,
-        *extra_ldflags, *libs, "-o", str(cov_bin),
+        *_source_args(sources), str(driver_obj), *cflags,
+        *ldflags, *libs, "-o", str(cov_bin),
     ]
 
     afl_env = AFL_ENV_DEFAULTS.copy()
-    afl_env["AFL_USE_ASAN"] = "1" if "address" in sanitizers else "0"
-    afl_env["AFL_USE_UBSAN"] = "1" if "undefined" in sanitizers else "0"
+    # afl-cc enables a sanitizer when its AFL_USE_* variable exists at all,
+    # even as "0", so only set the requested ones.
+    if "address" in sanitizers:
+        afl_env["AFL_USE_ASAN"] = "1"
+    if "undefined" in sanitizers:
+        afl_env["AFL_USE_UBSAN"] = "1"
 
     afl_result = _run(afl_cmd, env=afl_env)
     cov_result = _run(cov_cmd)
 
+    # A stale .cmplog from an older harness version must never be paired with
+    # a freshly built .afl binary, so drop it before (re)building.
+    cmplog_bin.unlink(missing_ok=True)
+    cmplog_result = {"exit_code": None, "cmd": "", "stdout": "", "stderr": ""}
+    if afl_result["exit_code"] == 0:
+        sources, cflags, ldflags = _inputs("cmplog")
+        cmplog_cmd = [
+            afl_compiler, "-g", "-O1",
+            *_source_args(sources), *cflags, *ldflags, str(afl_driver), *libs,
+            "-o", str(cmplog_bin),
+        ]
+        cmplog_env = {**AFL_ENV_DEFAULTS, "AFL_LLVM_CMPLOG": "1"}
+        cmplog_result = _run(cmplog_cmd, env=cmplog_env, unset_env=_CMPLOG_UNSET_ENV)
+
     return {
-        "ok": afl_result["exit_code"] == 0 and cov_result["exit_code"] == 0,
+        "ok": all(r["exit_code"] == 0 for r in (afl_result, cov_result, cmplog_result)),
         "afl_binary_path": str(afl_bin) if afl_result["exit_code"] == 0 else "",
         "cov_binary_path": str(cov_bin) if cov_result["exit_code"] == 0 else "",
+        "cmplog_binary_path": str(cmplog_bin) if cmplog_result["exit_code"] == 0 else "",
         "afl_build_cmd": afl_result["cmd"],
         "cov_build_cmd": cov_result["cmd"],
+        "cmplog_build_cmd": cmplog_result["cmd"],
         "afl_build_log": (afl_result["stdout"] + afl_result["stderr"])[-3000:],
         "cov_build_log": (cov_result["stdout"] + cov_result["stderr"])[-3000:],
+        "cmplog_build_log": (cmplog_result["stdout"] + cmplog_result["stderr"])[-3000:],
         "custom_mutator": custom_mutator_source or "",
+        "warning": afl_warning,
     }
 
 
@@ -319,6 +432,7 @@ def _read_afl_stats(out_dir: Path) -> dict:
 @mcp.tool()
 def run_afl_for(
     afl_binary_path: Annotated[str, Field(description="Path to the AFL-instrumented binary built by compile_harness")],
+    cmplog_binary_path: Annotated[str, Field(description="CMPLOG binary from compile_harness (cmplog_binary_path). Required: enables afl-fuzz -c (RedQueen) on the single instance / master, plus '-c ... -l 2AT' on secondary_1 when parallel_workers >= 2. Fails if the file is missing (rebuild the harness).")],
     seed_dir: Annotated[str, Field(description="Directory containing seed inputs (will be created if missing; AFL needs at least one seed)")],
     output_dir: Annotated[str, Field(description="afl-fuzz output directory (-o); will be created if missing")],
     seconds: Annotated[int, Field(description="Wall-clock budget for this campaign")] = 30,
@@ -335,6 +449,11 @@ def run_afl_for(
     N-1 secondaries (``-S secondary_<i>``) that share the same ``-o`` output
     directory; AFL then synchronises their queues automatically. Stats are
     summed across workers.
+
+    CMPLOG runs on at most two workers: the master with the default level,
+    and ``secondary_1`` with ``-l 2AT`` (adds arithmetic + transform
+    solving). AFL++'s multi-core guidance is that one or two instances run
+    CMPLOG and at least one of them uses ``-l 2AT``.
     """
     extra_args = extra_args or []
     afl_fuzz = _which("afl-fuzz")
@@ -342,6 +461,9 @@ def run_afl_for(
         return {"ok": False, "error": "afl-fuzz not on PATH (run install_afl.sh)"}
     if not Path(afl_binary_path).is_file():
         return {"ok": False, "error": f"binary not found: {afl_binary_path}"}
+    if not cmplog_binary_path or not Path(cmplog_binary_path).is_file():
+        return {"ok": False, "error": f"cmplog binary not found: {cmplog_binary_path!r} "
+                                      "(rebuild the harness with compile_harness)"}
 
     seed_path = Path(seed_dir)
     seed_path.mkdir(parents=True, exist_ok=True)
@@ -354,6 +476,9 @@ def run_afl_for(
 
     if not stdin_input and not extra_args:
         extra_args = ["@@"]
+
+    def _cmplog_args(level: str = "") -> list[str]:
+        return ["-c", cmplog_binary_path, *(["-l", level] if level else [])]
 
     def _build_cmd(worker_arg: list[str]) -> list[str]:
         cmd = [afl_fuzz, "-i", str(seed_path), "-o", str(out_path), "-V", str(seconds)]
@@ -368,14 +493,23 @@ def run_afl_for(
         return cmd
 
     if parallel_workers <= 1:
-        cmd = _build_cmd([])
+        cmd = _build_cmd(_cmplog_args())
         result = _run(cmd, timeout=seconds + 60, env=AFL_ENV_DEFAULTS)
         results = [result]
         worker_dirs = ["default"]
+        cmplog_workers = ["default"]
     else:
+        # TODO: every worker fuzzes the sanitized afl_binary_path. AFL++
+        # (docs/fuzzing_in_depth.md, "Selecting sanitizers" and "Using
+        # multiple cores") recommends a single secondary on the sanitizer
+        # build and an unsanitized build for the master and the other
+        # secondaries, because sanitizers are CPU-expensive. This needs an
+        # unsanitized library variant and harness binary.
         worker_dirs = ["default", *(f"secondary_{i}" for i in range(1, parallel_workers))]
-        cmds = [_build_cmd(["-M", "default"])]
-        cmds += [_build_cmd(["-S", w]) for w in worker_dirs[1:]]
+        cmds = [_build_cmd(["-M", "default", *_cmplog_args()])]
+        cmds.append(_build_cmd(["-S", worker_dirs[1], *_cmplog_args("2AT")]))
+        cmds += [_build_cmd(["-S", w]) for w in worker_dirs[2:]]
+        cmplog_workers = worker_dirs[:2]
         # Spawn all in parallel, then wait.
         procs = []
         for c in cmds:
@@ -435,6 +569,7 @@ def run_afl_for(
         "hangs_dir": hangs_dir,
         "output_dir": str(out_path),
         "parallel_workers": parallel_workers,
+        "cmplog_workers": cmplog_workers,
     }
 
 

@@ -22,7 +22,7 @@ report.
 | 3 | Identify fuzz targets | `seclab_taskflows_fuzzing.taskflows.fuzzing.identify_fuzz_targets` |
 | 4 | Analyse build system | `seclab_taskflows_fuzzing.taskflows.fuzzing.analyze_build_system` |
 | 5a | Write initial harnesses (×N candidates if requested) | `seclab_taskflows_fuzzing.taskflows.fuzzing.write_initial_harnesses` |
-| 5b | Build harnesses (AFL + coverage) | `seclab_taskflows_fuzzing.taskflows.fuzzing.build_harnesses` |
+| 5b | Build harnesses (AFL++ edge + AFL++ CMPLOG + clang coverage) | `seclab_taskflows_fuzzing.taskflows.fuzzing.build_harnesses` |
 | 5c | **G3** Qualify candidates (only if `HARNESS_CANDIDATES > 1`) | `seclab_taskflows_fuzzing.taskflows.fuzzing.qualify_harnesses` |
 | 6 | Fuzz/coverage/improve loop (×N iterations) | `seclab_taskflows_fuzzing.taskflows.fuzzing.fuzz_iteration` |
 | 7 | Triage crashes | `seclab_taskflows_fuzzing.taskflows.fuzzing.triage_crashes` |
@@ -40,7 +40,8 @@ Every iteration doubles the previous time budget:
 
 Each iteration, per harness:
 
-1. Run `afl-fuzz` for the assigned budget (using the `.afl` binary).
+1. Run `afl-fuzz` for the assigned budget (using the `.afl` binary, plus the
+   `.cmplog` binary via `-c`).
 2. Replay the entire AFL queue against the `.cov` binary, then export an LCOV
    tracefile via `llvm-cov export -format=lcov` (falls back to `gcov + lcov`).
 3. Parse the LCOV file → persist a `coverage_report` row + per-uncovered-item
@@ -55,18 +56,56 @@ Each iteration, per harness:
 The loop exits early once two consecutive iterations have both gained
 < `FUZZ_PLATEAU_THRESHOLD_PCT` (default **1.0**) line coverage.
 
-## Why two binaries per harness?
+## Why three binaries per harness?
 
 AFL's edge instrumentation isn't suitable for human-readable coverage reports.
-Each harness is therefore built **twice**:
+Each harness is therefore built **three times**, and all three builds must
+succeed:
 
 | Binary | Compiler | Flags | Used for |
 |--------|----------|-------|----------|
-| `<harness>.afl` | `afl-clang-lto` | `-fsanitize=address,undefined` | actual fuzzing campaign |
-| `<harness>.cov` | `clang` | `-fprofile-instr-generate -fcoverage-mapping` | LCOV replay of the AFL queue |
+| `<harness>.afl` | `afl-clang-lto++` | `-fsanitize=address,undefined` | actual fuzzing campaign |
+| `<harness>.cov` | `clang++` | `-fprofile-instr-generate -fcoverage-mapping` | LCOV replay of the AFL queue |
+| `<harness>.cmplog` | `afl-clang-lto++` | `AFL_LLVM_CMPLOG=1`, no sanitizers | `afl-fuzz -c` (CMPLOG/RedQueen) to solve magic values and checksums |
 
 This gives you real **source-line / function / branch** coverage, not just
-edge counts.
+edge counts. The `.cmplog` binary is mandatory: a failed CMPLOG build fails
+the harness build, and `run_afl_for` refuses to run without it. With
+`parallel_workers >= 2`,
+`run_afl_for` runs CMPLOG on the master and on `secondary_1` (with `-l 2AT`)
+only, in line with AFL++'s multi-core guidance that one or two instances run
+CMPLOG and at least one uses `-l 2AT`. `afl-clang-lto++` is preferred; if it
+isn't installed, `afl-clang-fast++` is used instead and `compile_harness`
+returns a warning, which `build_harnesses` appends to the harness notes. The
+C++ drivers link the C++ standard library, so a C harness can link a C++
+library; `.c` sources are still compiled as C via `-x c`.
+
+### Library variants and `{variant}`
+
+Instrumentation only applies to code compiled with the matching compiler, so
+a library built with plain `clang` would be invisible to AFL's edge
+coverage, sanitizers and CMPLOG. `analyze_build_system` therefore builds the
+target library three times, each in its own build directory:
+
+| Variant | Compiler | Environment / flags |
+|---------|----------|---------------------|
+| `afl` | `afl-clang-lto(++)`, `llvm-ar`, `llvm-ranlib` | `AFL_USE_ASAN=1 AFL_USE_UBSAN=1` |
+| `cmplog` | `afl-clang-lto(++)`, `llvm-ar`, `llvm-ranlib` | `AFL_LLVM_CMPLOG=1`, no `AFL_USE_*` |
+| `cov` | `clang(++)` | `-fprofile-instr-generate -fcoverage-mapping` |
+
+The `afl` variant's sanitizers must match the harness's `sanitizers`, which
+`write_initial_harnesses` sets to `address,undefined` for every harness. A
+harness built with other sanitizers would mix instrumentation and may fail
+to link.
+
+Without `afl-clang-lto(++)`, the `afl` and `cmplog` variants use
+`afl-clang-fast(++)` instead, matching `compile_harness`.
+
+Target notes record paths into those build directories with a literal
+`{variant}` placeholder (e.g. `-I/src/build-{variant}/include`,
+`/src/build-{variant}/libfoo.a`). `compile_harness` replaces it with `afl`,
+`cmplog` or `cov` in `extra_sources`, `extra_cflags` and `extra_ldflags` for
+each binary. Paths without the placeholder are used as-is for all three.
 
 ## Structure-aware fuzzing (C5)
 
@@ -194,7 +233,7 @@ and writes:
 | Path | Contents |
 |------|----------|
 | `~/.local/share/seclab-taskflow-agent/seclab-taskflows/fuzz_context/fuzz_context.db` | SQLite — targets, harnesses, runs, coverage, crashes, **verdicts** |
-| `~/.local/share/seclab-taskflow-agent/seclab-taskflows/fuzz_runner/builds/` | Built `.afl` and `.cov` binaries |
+| `~/.local/share/seclab-taskflow-agent/seclab-taskflows/fuzz_runner/builds/` | Built `.afl`, `.cov` and `.cmplog` binaries |
 | `~/.local/share/seclab-taskflow-agent/seclab-taskflows/fuzz_runner/runs/` | AFL output dirs + LCOV files |
 | `~/.local/share/seclab-taskflow-agent/seclab-taskflows/fuzz_runner/repo/<owner>__<repo>/REPORT.md` | Markdown campaign summary, crashes grouped by verdict |
 | `~/.local/share/seclab-taskflow-agent/seclab-taskflows/fuzz_runner/repo/<owner>__<repo>/vuln_<crash_id>.md` | Per-crash markdown vuln report (verdict, root cause, exploitability, suggested patch, regression-test sketch) |

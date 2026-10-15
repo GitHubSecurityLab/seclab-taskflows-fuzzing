@@ -37,6 +37,7 @@ class Harness(Base):
     harness_path: Mapped[str]
     afl_binary_path: Mapped[str] = mapped_column(nullable=True)
     cov_binary_path: Mapped[str] = mapped_column(nullable=True)
+    cmplog_binary_path: Mapped[str] = mapped_column(nullable=True)
     build_cmd_afl: Mapped[str] = mapped_column(Text, nullable=True)
     build_cmd_cov: Mapped[str] = mapped_column(Text, nullable=True)
     sanitizers: Mapped[str] = mapped_column(Text, nullable=True)

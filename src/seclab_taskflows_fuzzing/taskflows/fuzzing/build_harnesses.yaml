@@ -9,8 +9,11 @@ model_config: seclab_taskflows_fuzzing.configs.model_config
 globals:
   repo:
 
-# Compile every harness twice: once with AFL instrumentation and once with
-# llvm-cov instrumentation. Records build_status on each harness row.
+# Compile every harness three times: with AFL++ edge instrumentation
+# (afl-clang-lto++, or afl-clang-fast++ if LTO isn't installed), with AFL++
+# CMPLOG instrumentation (same compiler) and with clang++ coverage
+# instrumentation; .c sources are compiled as C via -x c.
+# All three must succeed. Records build_status on each harness row.
 taskflow:
   - task:
       must_complete: true
@@ -32,7 +35,7 @@ taskflow:
       async: true
       max_steps: 80
       name: build harness
-      description: Build the AFL and coverage binaries for one harness.
+      description: Build the AFL++ (edge and CMPLOG) and clang coverage binaries for one harness.
       agents:
         - seclab_taskflows_fuzzing.personalities.fuzzing_engineer
       user_prompt: |
@@ -86,11 +89,19 @@ taskflow:
                        - candidate v3 → smart_combined.c
                      The qualifier round will pick the best by 60s coverage.
 
+             Copy paths containing the literal `{variant}` placeholder
+             exactly as written in the notes; do NOT replace it yourself.
+             `compile_harness` resolves it to `afl` / `cmplog` / `cov` so
+             each binary links the matching library build.
+
           3. Read the returned dict. Then call `update_harness_build` with the
-             returned `afl_binary_path`, `cov_binary_path`, `afl_build_cmd`,
-             `cov_build_cmd`, and a `build_status` of either `ok` (when both
-             builds succeeded) or a short error message extracted from
-             `afl_build_log` / `cov_build_log`.
+             returned `afl_binary_path`, `cov_binary_path`, `cmplog_binary_path`,
+             `afl_build_cmd`, `cov_build_cmd`, and a `build_status` of either
+             `ok` (when the returned `ok` is true, i.e. the AFL, CMPLOG and
+             coverage builds all succeeded) or a short error message
+             extracted from `afl_build_log` / `cmplog_build_log` /
+             `cov_build_log`, whichever failed. If the returned `warning` is
+             non-empty, also pass it as `notes`.
 
           4. If the build failed because of a missing header or a compile error
              in the harness itself, edit the harness source file to fix it,
