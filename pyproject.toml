@@ -23,7 +23,11 @@ classifiers = [
   "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
-  "seclab-taskflows==0.1.0",
+  # Pinned to the commit that moved to seclab-taskflow-agent 0.5.0, the first
+  # agent release whose anthropic_sdk backend works with api.githubcopilot.com.
+  # Switch back to a release once seclab-taskflows publishes one that requires
+  # 0.5.0.
+  "seclab-taskflows @ git+https://github.com/GitHubSecurityLab/seclab-taskflows@b1a52653f7cc70cf6918f2e310a48c4f689cf377",
 ]
 
 [project.urls]

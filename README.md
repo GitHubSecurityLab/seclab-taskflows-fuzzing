@@ -45,6 +45,9 @@ transitively, so every dotted reference of the form
 `seclab_taskflows.configs.model_config` resolves out of the parent
 distribution at runtime.
 
+`seclab-taskflows` is pinned to a git commit because no release of it
+uses `seclab-taskflow-agent` 0.5.0 yet.
+
 ---
 
 ## Table of contents
