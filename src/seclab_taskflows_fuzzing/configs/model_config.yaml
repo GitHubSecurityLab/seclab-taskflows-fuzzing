@@ -20,4 +20,3 @@ seclab-taskflow-agent:
 models:
    code_analysis: claude-sonnet-5
    general_tasks: claude-sonnet-5
-   triage: claude-sonnet-5
