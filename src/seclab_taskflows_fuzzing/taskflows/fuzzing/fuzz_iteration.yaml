@@ -122,4 +122,4 @@ taskflow:
         - seclab_taskflows_fuzzing.toolboxes.fuzz_context
         - seclab_taskflows_fuzzing.toolboxes.fuzz_runner
         - seclab_taskflows_fuzzing.toolboxes.local_shell
-        - seclab_taskflows.toolboxes.local_file_viewer
+        - seclab_taskflows_fuzzing.toolboxes.local_file_viewer

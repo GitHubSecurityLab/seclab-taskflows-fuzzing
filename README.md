@@ -18,9 +18,10 @@ This repository contains the **fuzzing taskflow** for the
 It depends on the
 [seclab-taskflows](https://github.com/GitHubSecurityLab/seclab-taskflows)
 companion repository for a few shared building blocks
-(`fetch_source_code` taskflow, `local_file_viewer` / `gh_file_viewer`
-toolboxes, and the default `model_config`) — those are installed
-automatically as a Python dependency.
+(`fetch_source_code` taskflow, `gh_file_viewer` toolbox, and the default
+`model_config`) — those are installed automatically as a Python
+dependency. The `local_file_viewer` toolbox lives in this repository
+because seclab-taskflows has removed it.
 
 Contributions are welcome! Please see [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
 
@@ -40,7 +41,6 @@ pip install git+https://github.com/GitHubSecurityLab/seclab-taskflows-fuzzing
 This pulls in `seclab-taskflow-agent` and `seclab-taskflows` (parent)
 transitively, so every dotted reference of the form
 `seclab_taskflows.taskflows.audit.*`,
-`seclab_taskflows.toolboxes.local_file_viewer`,
 `seclab_taskflows.toolboxes.gh_file_viewer`, and
 `seclab_taskflows.configs.model_config` resolves out of the parent
 distribution at runtime.

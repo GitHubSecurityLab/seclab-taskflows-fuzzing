@@ -78,6 +78,6 @@ taskflow:
         empty, you have done nothing useful. Re-call `store_fuzz_target` for
         every candidate you discussed.
       toolboxes:
-        - seclab_taskflows.toolboxes.local_file_viewer
+        - seclab_taskflows_fuzzing.toolboxes.local_file_viewer
         - seclab_taskflows.toolboxes.gh_file_viewer
         - seclab_taskflows_fuzzing.toolboxes.fuzz_context
