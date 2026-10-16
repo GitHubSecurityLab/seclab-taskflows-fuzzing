@@ -119,7 +119,7 @@ echo "[run_fuzzing] === step 1/6: install AFL++ + tooling ==="
 "$SCRIPT_DIR/install_afl.sh"
 
 # Make sure the freshly-installed AFL++ binaries are on PATH for this shell.
-export PATH="${HOME}/.local/opt/AFLplusplus/bin:${PATH}"
+export PATH="${AFL_PREFIX:-$HOME/.local/opt/AFLplusplus}/bin:${PATH}"
 
 start_dashboard
 
