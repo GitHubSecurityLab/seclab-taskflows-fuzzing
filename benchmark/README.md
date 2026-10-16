@@ -4,15 +4,27 @@ Reference projects we use to validate the fuzzing taskflow end-to-end. Each
 entry is a small or well-known C/C++ project where AFL++ instrumentation works
 out of the box.
 
-Run any benchmark target with:
+Run the whole benchmark with:
+
+```bash
+python scripts/fuzzing/run_benchmark.py                                   # every project below
+python scripts/fuzzing/run_benchmark.py DaveGamble/cJSON akheron/jansson  # a subset
+```
+
+It runs `run_fuzzing.sh` once per project in `projects.yaml`, keeps going when a
+project fails, and writes `summary.md` (a table with status, duration, targets,
+harnesses, AFL runs, crashes, best line coverage and verdicts per project) and
+`summary.json` to a fresh results directory:
+`~/.local/share/seclab-taskflow-agent/benchmarks/<UTC timestamp>/` (override
+with `--out`). Each benchmark run uses its own `DATA_DIR`, so its numbers don't
+mix with earlier runs. The summary also records the commit, package versions,
+models, reasoning efforts and `run_fuzzing.sh` settings used.
+
+To run a single project without the wrapper:
 
 ```bash
 ./scripts/fuzzing/run_fuzzing.sh <owner/repo>
 ```
-
-(The fuzzing taskflow always operates on a single GitHub repository, so the
-benchmark file lists repos one per row rather than wrapping them in a custom
-runner.)
 
 ## Projects
 
@@ -54,7 +66,15 @@ serialisers tend to work best.
 
 ## Reading results
 
-Each run writes:
+`run_benchmark.py` puts everything for a benchmark run under its results
+directory:
+- `summary.md`, `summary.json`
+- `logs/`: one `<owner>__<repo>.log` per project, plus the MCP server logs
+- `data/fuzz_context.db`, and per project `data/repo/<owner>__<repo>/REPORT.md` and `vuln_<id>.md`
+
+The dashboard below serves that run's database for the whole benchmark.
+
+A single `run_fuzzing.sh` run writes:
 - SQLite DB: `~/.local/share/seclab-taskflow-agent/seclab-taskflows/fuzz_context/fuzz_context.db`
 - Per-repo report: `~/.local/share/seclab-taskflow-agent/seclab-taskflows/fuzz_runner/repo/<owner>__<repo>/REPORT.md`
 - Per-crash vuln reports: same directory, `vuln_<id>.md`

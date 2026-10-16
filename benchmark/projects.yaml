@@ -1,8 +1,8 @@
 # SPDX-FileCopyrightText: GitHub, Inc.
 # SPDX-License-Identifier: MIT
 #
-# Benchmark targets for the fuzzing taskflow. Used by humans to pick repos to
-# run; not consumed automatically by run_fuzzing.sh today.
+# Benchmark targets for the fuzzing taskflow. scripts/fuzzing/run_benchmark.py
+# runs every entry (see benchmark/README.md).
 
 projects:
   - repo: tukaani-project/xz
