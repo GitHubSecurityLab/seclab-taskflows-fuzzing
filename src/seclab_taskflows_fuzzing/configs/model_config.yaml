@@ -13,6 +13,9 @@
 #
 # To use a different model for a one-off run, pass
 # `-m <other_module_path>` explicitly; that still overrides this default.
+#
+# code_analysis (harness writing, build fixes, triage) uses high reasoning
+# effort and general_tasks (simple bookkeeping steps) low.
 
 seclab-taskflow-agent:
   version: "1.0"
@@ -20,4 +23,10 @@ seclab-taskflow-agent:
 models:
    code_analysis: claude-sonnet-5
    general_tasks: claude-sonnet-5
-   triage: claude-sonnet-5
+model_settings:
+   code_analysis:
+      reasoning:
+         effort: high
+   general_tasks:
+      reasoning:
+         effort: low
