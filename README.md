@@ -589,7 +589,8 @@ When adding a new COLUMN to an existing table:
 
 `benchmark/projects.yaml` lists the reference projects. They're chosen so
 the full v4+ pipeline can run end-to-end on a codespace dev image without
-human intervention.
+human intervention. Run them all with `python scripts/fuzzing/run_benchmark.py`
+(see `benchmark/README.md`).
 
 | # | Repo | Why it's interesting | Notes |
 |---|------|----------------------|-------|
