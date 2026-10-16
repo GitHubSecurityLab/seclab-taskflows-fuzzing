@@ -26,6 +26,12 @@ dependencies = [
   "seclab-taskflows==0.1.0",
 ]
 
+[project.optional-dependencies]
+# Renders the benchmark history chart (scripts/fuzzing/run_benchmark.py --record).
+benchmark = [
+  "matplotlib>=3.8",
+]
+
 [project.urls]
 Source = "https://github.com/GitHubSecurityLab/seclab-taskflows-fuzzing"
 Issues = "https://github.com/GitHubSecurityLab/seclab-taskflows-fuzzing/issues"
@@ -43,6 +49,7 @@ packages = ["src/seclab_taskflows_fuzzing"]
 
 [tool.hatch.envs.hatch-test]
 extra-dependencies = [
+  "matplotlib>=3.8",
   "pytest-asyncio==1.3.0",
 ]
 

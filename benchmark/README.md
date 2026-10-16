@@ -36,26 +36,43 @@ To run a single project without the wrapper:
 | 4 | `libexpat/libexpat` | Mature streaming XML parser; large attack surface; many historical CVEs | CMake or autotools; classic fuzz target |
 | 5 | `kkos/oniguruma` | Regex engine with state-machine compiler; takes attacker pattern + subject | Autotools; pattern compilation is the hot path |
 
-## Most-recent benchmark results
+## Results
 
-These numbers come from end-to-end runs through the full v4 pipeline on the
-codespace dev image. Coverage and crash counts depend on the underlying LLM and
-the time budget cap (≈32 min/target).
+The history of recorded runs and the latest run's numbers are in the
+[root README](../README.md#benchmark-projects-and-results).
 
-| Repo | Targets | Harnesses built | AFL runs | Crashes | Verdicts seen |
-|------|---------|-----------------|----------|---------|---------------|
-| `tukaani-project/xz` | 8 | 8 | 48 | 0 | — |
-| `DaveGamble/cJSON` | 6 | 6 | 36 | 0 | — |
-| `akheron/jansson` | 7 | 7 | 35 | 10 | `harness_bug`, `library_hardening`, `duplicate`, `needs_investigation` |
-| `libexpat/libexpat` | 3 | 3 | 18 | 0 | — |
-| `kkos/oniguruma` | 10 | 10 | 60 | 13 | `vulnerability` (×2, OOB read in `regerror.c`), `library_hardening`, `harness_bug`, `non_reproducible` |
+## Recording a run
 
-The xz / cJSON / libexpat zero-crash results are expected: those projects are
-heavily fuzzed upstream. The two `vulnerability`-classified findings in
-oniguruma are real out-of-bounds reads in the warning-formatting code path of
-`onig_snprintf_with_pattern` (one-byte read past `pat_end` when the pattern
-ends with a backslash); the per-crash markdown reports include suggested
-patches.
+```bash
+pip install '.[benchmark]'   # matplotlib, for the chart (the devcontainer already installs it)
+python scripts/fuzzing/run_benchmark.py --record
+```
+
+`--record` checks before it starts that:
+- it's a full run (no `owner/repo` arguments),
+- the checkout is clean (`git status` shows nothing),
+- `src/seclab_taskflows_fuzzing/configs/model_config.yaml` sets the
+  `code_analysis` reasoning effort to `low`, `medium`, `high`, `xhigh` or `max`,
+- matplotlib is installed.
+
+The run is recorded only if every project finishes and the checkout is still at
+the same commit with no uncommitted changes. Then it writes
+`results/<UTC timestamp>_<commit>.json` (commit, package versions, models and
+their settings, the `AI_API_ENDPOINT` and `run_fuzzing.sh` settings used, and
+per-project numbers) and regenerates `history-light.svg`, `history-dark.svg`
+and the results section of the root README. Commit those files in a pull
+request.
+
+The chart has one panel per project with the best line coverage of each
+recorded run. Marker colour is the `code_analysis` model and marker shape its
+reasoning effort (● low, ■ medium, ▲ high, ◆ xhigh, ★ max).
+
+To regenerate the chart and README section from `results/` (for example after
+removing a result file):
+
+```bash
+python scripts/fuzzing/benchmark_history.py
+```
 
 ## Adding a project
 
