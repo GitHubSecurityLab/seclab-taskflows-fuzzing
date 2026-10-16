@@ -17,7 +17,8 @@ python -m pip install --upgrade pip
 python -m pip install hatch
 hatch build
 
-# Install this package from local directory.
-pip install -e .
+# Install this package from local directory, with the benchmark extra
+# (matplotlib) that scripts/fuzzing/run_benchmark.py --record needs.
+pip install -e '.[benchmark]'
 
 echo "✅ Development environment setup complete!"

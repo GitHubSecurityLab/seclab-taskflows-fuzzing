@@ -12,6 +12,7 @@ Usage:
     python scripts/fuzzing/run_benchmark.py                    # every project
     python scripts/fuzzing/run_benchmark.py DaveGamble/cJSON   # a subset
     python scripts/fuzzing/run_benchmark.py --out DIR          # pick the results dir
+    python scripts/fuzzing/run_benchmark.py --record           # add the run to the benchmark history
 
 Each benchmark run gets its own results directory (default
 ``~/.local/share/seclab-taskflow-agent/benchmarks/<UTC timestamp>/``), so its
@@ -25,6 +26,11 @@ numbers don't mix with earlier runs:
 The summary is rewritten after every project, so an interrupted run still
 leaves results for the projects that finished. The dashboard serves this run's
 database on ``FUZZ_DASHBOARD_PORT`` (default 8765) unless ``FUZZ_NO_DASHBOARD=1``.
+
+With ``--record``, a full run from a clean checkout in which every project
+finishes is also saved to ``benchmark/results/<UTC timestamp>_<commit>.json``,
+and ``benchmark_history.py`` regenerates the history chart and the results
+section of README.md from those files.
 """
 
 from __future__ import annotations
@@ -32,6 +38,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import importlib.metadata
+import importlib.util
 import json
 import os
 import re
@@ -42,6 +49,8 @@ import time
 from pathlib import Path
 
 import yaml
+
+import benchmark_history as history  # sibling script; this script's directory is on sys.path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 ROOT = SCRIPT_DIR.parent.parent
@@ -54,6 +63,17 @@ DEFAULT_OUT_ROOT = Path.home() / ".local/share/seclab-taskflow-agent/benchmarks"
 # run_fuzzing.sh knobs; their defaults are read from the script.
 FUZZ_SETTINGS = ("HARNESS_CANDIDATES", "QUALIFIER_SECONDS", "FUZZ_PLATEAU_THRESHOLD_PCT")
 PACKAGES = ("seclab-taskflows-fuzzing", "seclab-taskflows", "seclab-taskflow-agent")
+RECORDED_FIELDS = (
+    "repo",
+    "duration_seconds",
+    "targets",
+    "harnesses_built",
+    "harnesses_total",
+    "afl_runs",
+    "crashes",
+    "best_line_pct",
+    "verdicts",
+)
 
 
 def _now() -> datetime.datetime:
@@ -178,6 +198,51 @@ def run_metadata() -> dict:
     }
 
 
+def _has_matplotlib() -> bool:
+    return importlib.util.find_spec("matplotlib") is not None
+
+
+def record_problems(repos_given: bool, meta: dict) -> list[str]:
+    """Why this run can't be recorded (checked before it starts)."""
+    problems = []
+    if repos_given:
+        problems.append("--record needs a full run of benchmark/projects.yaml; drop the owner/repo arguments")
+    if meta["commit"] is None:
+        problems.append(f"{ROOT} is not a git checkout")
+    elif meta["dirty"]:
+        problems.append("the checkout has uncommitted or untracked changes (see `git status`)")
+    effort = history.reasoning_effort(meta["model_settings"], "code_analysis")
+    if effort not in history.EFFORTS:
+        current = "doesn't set" if effort is None else f"sets {effort!r} as"
+        problems.append(
+            f"model_config.yaml {current} the code_analysis reasoning effort; "
+            f"set it to one of {', '.join(history.EFFORTS)}"
+        )
+    if not _has_matplotlib():
+        problems.append("matplotlib is missing; install it with `pip install '.[benchmark]'`")
+    return problems
+
+
+def record_run(summary: dict, root: Path) -> Path:
+    """Save a finished run to <root>/benchmark/results/ and return the file."""
+    meta = summary["meta"]
+    record = {
+        "started_at": summary["started_at"],
+        "finished_at": _iso(_now()),
+        "commit": meta["commit"],
+        "versions": meta["versions"],
+        "models": meta["models"],
+        "model_settings": meta["model_settings"],
+        "settings": meta["settings"],
+        "projects": [{k: p[k] for k in RECORDED_FIELDS} for p in summary["projects"]],
+    }
+    stamp = summary["started_at"].replace("-", "").replace(":", "")
+    path = history.results_dir(root) / f"{stamp}_{meta['commit'][:7]}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n")
+    return path
+
+
 def _fmt_duration(seconds: int | None) -> str:
     if seconds is None:
         return "—"
@@ -190,29 +255,10 @@ def _fmt_duration(seconds: int | None) -> str:
     return f"{secs}s"
 
 
-def _fmt_verdicts(verdicts: dict[str, int]) -> str:
-    if not verdicts:
-        return "—"
-    return ", ".join(f"`{v}`" + (f" (×{n})" if n > 1 else "") for v, n in verdicts.items())
-
-
-def _reasoning_effort(model_settings: dict, role: str) -> str | None:
-    """The reasoning effort model_config.yaml sets for *role*, if any.
-
-    ``reasoning: {effort: ...}`` is the openai_agents / anthropic_sdk form,
-    ``reasoning_effort`` the copilot_sdk one.
-    """
-    settings = model_settings.get(role) or {}
-    reasoning = settings.get("reasoning")
-    if isinstance(reasoning, dict) and reasoning.get("effort"):
-        return reasoning["effort"]
-    return settings.get("reasoning_effort")
-
-
 def _models_line(meta: dict) -> str:
     parts = []
     for role, model in meta["models"].items():
-        effort = _reasoning_effort(meta["model_settings"], role)
+        effort = history.reasoning_effort(meta["model_settings"], role)
         parts.append(f"{role}={model}" + (f" ({effort} effort)" if effort else ""))
     return ", ".join(parts) or "unknown"
 
@@ -241,7 +287,7 @@ def render_markdown(summary: dict) -> str:
         lines.append(
             f"| `{p['repo']}` | [{status}]({p['log']}) | {_fmt_duration(p['duration_seconds'])} "
             f"| {p['targets']} | {p['harnesses_built']}/{p['harnesses_total']} | {p['afl_runs']} "
-            f"| {p['crashes']} | {cov} | {_fmt_verdicts(p['verdicts'])} |"
+            f"| {p['crashes']} | {cov} | {history.fmt_verdicts(p['verdicts'])} |"
         )
     return "\n".join(lines) + "\n"
 
@@ -305,9 +351,20 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         help="results directory (default: ~/.local/share/seclab-taskflow-agent/benchmarks/<UTC timestamp>)",
     )
+    parser.add_argument(
+        "--record",
+        action="store_true",
+        help="add the run to benchmark/results/ and regenerate the history chart and README section "
+        "(needs a full run from a clean checkout; only recorded if every project finishes)",
+    )
     args = parser.parse_args(argv)
 
     meta = run_metadata()
+    if args.record and (problems := record_problems(bool(args.repos), meta)):
+        for problem in problems:
+            print(f"[run_benchmark] can't record: {problem}", file=sys.stderr)
+        return 2
+
     repos = args.repos or load_projects()
     started = _now()
     out = (args.out or DEFAULT_OUT_ROOT / started.strftime("%Y%m%dT%H%M%SZ")).resolve()
@@ -356,7 +413,18 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"[run_benchmark] done; summary in {out / 'summary.md'}")
     failed = [p["repo"] for p in summary["projects"] if p["status"] != "ok"]
-    return 1 if failed else 0
+    if not args.record:
+        return 1 if failed else 0
+    if failed:
+        print(f"[run_benchmark] not recorded: {', '.join(failed)} didn't finish", file=sys.stderr)
+        return 1
+    if git_state() != (meta["commit"], False):
+        print("[run_benchmark] not recorded: the checkout changed during the run", file=sys.stderr)
+        return 1
+    path = record_run(summary, ROOT)
+    history.regenerate(ROOT)
+    print(f"[run_benchmark] recorded {path.relative_to(ROOT)}; commit it with benchmark/history-*.svg and README.md")
+    return 0
 
 
 if __name__ == "__main__":

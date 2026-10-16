@@ -15,7 +15,8 @@
 # `-m <other_module_path>` explicitly; that still overrides this default.
 #
 # code_analysis (harness writing, build fixes, triage) uses high reasoning
-# effort and general_tasks (simple bookkeeping steps) low.
+# effort and general_tasks (simple bookkeeping steps) low. The benchmark
+# history (benchmark/README.md) records both with every run.
 
 seclab-taskflow-agent:
   version: "1.0"

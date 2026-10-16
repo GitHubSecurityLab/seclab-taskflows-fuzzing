@@ -37,6 +37,8 @@ def _load_runner():
 
 @pytest.fixture
 def runner(monkeypatch, tmp_path):
+    # run_benchmark.py imports its sibling benchmark_history.py.
+    monkeypatch.syspath_prepend(str(SCRIPTS))
     mod = _load_runner()
     config = tmp_path / "model_config.yaml"
     config.write_text(MODEL_CONFIG)
@@ -171,3 +173,105 @@ def test_run_metadata_drops_tokens(runner, tmp_path, monkeypatch):
     assert meta["models"] == {"code_analysis": "m1", "general_tasks": "m2"}
     assert meta["model_settings"] == {"code_analysis": {"reasoning": {"effort": "max"}}}
     assert set(meta["settings"]) == {"AI_API_ENDPOINT", *runner.FUZZ_SETTINGS}
+
+
+@pytest.fixture
+def recording(runner, tmp_path, monkeypatch):
+    """A fake benchmark checkout under tmp_path/root plus a fake run_fuzzing.sh."""
+    root = tmp_path / "root"
+    root.mkdir()
+    readme = root / "README.md"
+    readme.write_text("# Demo\n\n<!-- benchmark-history:start -->\n<!-- benchmark-history:end -->\n\nTail\n")
+    fake = tmp_path / "run_fuzzing.sh"
+    fake.write_text('#!/bin/sh\n[ "$1" = "bad/repo" ] && exit 3\nexit 0\n')
+    fake.chmod(0o755)
+    monkeypatch.setattr(runner, "ROOT", root)
+    monkeypatch.setattr(runner, "RUN_FUZZING", fake)
+    monkeypatch.setattr(runner, "git_state", lambda: (SHA, False))
+    monkeypatch.setattr(runner, "load_projects", lambda: ["demo/lib", "other/lib"])
+    monkeypatch.setattr(runner, "_has_matplotlib", lambda: True)
+    monkeypatch.setenv("FUZZ_NO_DASHBOARD", "1")
+    out = (tmp_path / "out").resolve()
+    (out / "data").mkdir(parents=True)
+    _populate(out / "data" / "fuzz_context.db")
+    return root, out
+
+
+@pytest.mark.parametrize(
+    ("case", "message"),
+    [
+        ("subset", "needs a full run"),
+        ("dirty", "uncommitted or untracked changes"),
+        ("no_effort", "doesn't set the code_analysis reasoning effort"),
+        ("bad_effort", "sets 'minimal' as the code_analysis reasoning effort"),
+        ("no_matplotlib", "matplotlib is missing"),
+    ],
+)
+def test_record_refuses_before_running(runner, recording, tmp_path, monkeypatch, capsys, case, message):
+    root, out = recording
+    args = ["--record", "--out", str(out)]
+    if case == "subset":
+        args.insert(0, "demo/lib")
+    elif case == "dirty":
+        monkeypatch.setattr(runner, "git_state", lambda: (SHA, True))
+    elif case in ("no_effort", "bad_effort"):
+        config = tmp_path / "model_config.yaml"
+        effort = "\nmodel_settings:\n  code_analysis:\n    reasoning_effort: minimal\n" if case == "bad_effort" else ""
+        config.write_text("models:\n  code_analysis: m1\n" + effort)
+        monkeypatch.setattr(runner, "MODEL_CONFIG", config)
+    elif case == "no_matplotlib":
+        monkeypatch.setattr(runner, "_has_matplotlib", lambda: False)
+
+    assert runner.main(args) == 2
+    assert message in capsys.readouterr().err
+    assert not (out / "logs").exists()
+    assert not (root / "benchmark").exists()
+
+
+def test_record_writes_result_and_history(runner, recording):
+    pytest.importorskip("matplotlib")
+    root, out = recording
+
+    assert runner.main(["--record", "--out", str(out)]) == 0
+
+    (path,) = (root / "benchmark" / "results").iterdir()
+    assert path.name.endswith(f"Z_{SHA[:7]}.json")
+    record = json.loads(path.read_text())
+    assert record["commit"] == SHA
+    assert record["model_settings"]["code_analysis"] == {"reasoning": {"effort": "high"}}
+    assert set(record["settings"]) == {"AI_API_ENDPOINT", *runner.FUZZ_SETTINGS}
+    assert "out_dir" not in record
+    demo, other = record["projects"]
+    assert set(demo) == set(runner.RECORDED_FIELDS)
+    assert (demo["repo"], demo["best_line_pct"], demo["crashes"]) == ("demo/lib", 42.5, 4)
+    assert (other["repo"], other["best_line_pct"]) == ("other/lib", 90.0)
+
+    readme = (root / "README.md").read_text()
+    assert readme.startswith("# Demo\n") and readme.endswith("\n\nTail\n")
+    assert f"commit [`{SHA[:7]}`]" in readme
+    assert "| `demo/lib` | 42.5% | — | 2 | 2/3 | 2 | 4 |" in readme
+    assert (root / "benchmark" / "history-light.svg").is_file()
+    assert (root / "benchmark" / "history-dark.svg").is_file()
+
+
+def test_record_skips_runs_with_a_failed_project(runner, recording, monkeypatch, capsys):
+    root, out = recording
+    monkeypatch.setattr(runner, "load_projects", lambda: ["demo/lib", "bad/repo"])
+    before = (root / "README.md").read_text()
+
+    assert runner.main(["--record", "--out", str(out)]) == 1
+
+    assert "not recorded: bad/repo didn't finish" in capsys.readouterr().err
+    assert not (root / "benchmark").exists()
+    assert (root / "README.md").read_text() == before
+
+
+def test_record_skips_runs_when_the_checkout_changes(runner, recording, monkeypatch, capsys):
+    root, out = recording
+    states = iter([(SHA, False), ("f" * 40, False)])
+    monkeypatch.setattr(runner, "git_state", lambda: next(states))
+
+    assert runner.main(["--record", "--out", str(out)]) == 1
+
+    assert "checkout changed during the run" in capsys.readouterr().err
+    assert not (root / "benchmark").exists()
