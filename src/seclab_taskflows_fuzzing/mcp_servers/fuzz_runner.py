@@ -221,7 +221,8 @@ def _afl_compiler() -> tuple[str | None, str]:
         return path, ""
     if path := _which(fast):
         return path, (f"{lto} not found, using {fast}: no collision-free edge IDs or "
-                      "LTO autodictionary (install lld and re-run install_afl.sh)")
+                      "LTO autodictionary (install lld, delete ~/.local/opt/AFLplusplus and "
+                      "re-run install_afl.sh)")
     return None, ""
 
 

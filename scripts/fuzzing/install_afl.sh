@@ -3,8 +3,8 @@
 # SPDX-License-Identifier: MIT
 #
 # install_afl.sh — install AFL++ (latest release tag) and llvm/lcov tooling
-# required by the fuzzing taskflow. Idempotent: if afl-clang-lto and llvm-cov
-# are already on PATH, this script is a no-op.
+# required by the fuzzing taskflow. Idempotent: AFL++ is only built if afl-fuzz
+# or afl-clang-fast is missing from both PATH and $AFL_PREFIX/bin.
 
 set -euo pipefail
 
@@ -57,9 +57,21 @@ latest_release_tag() {
     | head -1
 }
 
+warn_if_no_lto() {
+  if ! have afl-clang-lto; then
+    log "WARNING: afl-clang-lto not found; harnesses will use afl-clang-fast. To get it," \
+      "install lld, delete $AFL_PREFIX and re-run this script."
+  fi
+}
+
 install_afl() {
-  if have afl-clang-lto && have afl-fuzz; then
+  # Find an earlier build even if $AFL_PREFIX/bin isn't on PATH yet.
+  export PATH="$AFL_PREFIX/bin:$PATH"
+  # afl-clang-lto is optional (it needs lld with LTO support), so its absence
+  # alone doesn't trigger a rebuild.
+  if have afl-fuzz && have afl-clang-fast; then
     log "AFL++ already installed: $(afl-fuzz -V 2>&1 | head -1)"
+    warn_if_no_lto
     return 0
   fi
   local tag
@@ -86,8 +98,8 @@ install_afl() {
   if [ -f "$rc" ] && ! grep -qF "$line" "$rc"; then
     printf '\n%s\n' "$line" >> "$rc"
   fi
-  export PATH="$AFL_PREFIX/bin:$PATH"
   log "AFL++ installed: $(afl-fuzz -V 2>&1 | head -1)"
+  warn_if_no_lto
 }
 
 ensure_llvm_cov() {
